@@ -24,6 +24,19 @@ fn test_render_document_single_paragraph() {
 }
 
 #[test]
+fn test_render_document_hard_linebreak_before_parenthesis() {
+    // A spreadsheet cell with a hard break before a parenthesised code, as in
+    // "New York" over "(07) Western", failed to compile at all.
+    let doc = make_simple_document("New York\n(07) Western");
+    let pdf = render_document(&doc).unwrap();
+    let text = pdf_extract::extract_text_from_mem(&pdf).unwrap();
+    assert!(
+        text.contains("(07) Western") && !text.contains(';'),
+        "text after the hard break must survive and the terminator must not render: {text}"
+    );
+}
+
+#[test]
 fn test_render_document_with_tab_leader() {
     let doc = Document {
         metadata: Metadata::default(),

@@ -635,8 +635,33 @@ fn test_escape_typst_preserves_spaces_after_hard_linebreak() {
     // Code blocks carry hard breaks followed by indentation.
     let result = escape_typst("match x {\n  b\"w:p\" => 1,\n}");
     assert!(
-        result.contains("#linebreak()#\"  \";"),
+        result.contains("#linebreak();#\"  \";"),
         "post-break indentation must survive: {result}"
+    );
+}
+
+#[test]
+fn test_escape_typst_terminates_hard_linebreak_before_parenthesis() {
+    // A fee-schedule cell reads "New York" over "(07) Western". Typst parses
+    // an unterminated `#linebreak()(07)` as a call on the break's content
+    // and aborts the whole conversion with "expected function, found
+    // content".
+    let result = escape_typst("New York\n(07) Western");
+    assert!(
+        result.contains("#linebreak();(07) Western"),
+        "the break must be terminated before literal text: {result}"
+    );
+}
+
+#[test]
+fn test_escape_typst_terminates_hard_linebreak_before_field_access() {
+    // A leading `.name` would otherwise read as a field access on the break
+    // ("linebreak does not have field"). A leading `.5` is a number and
+    // never chained, so the case below is the one that failed documents.
+    let result = escape_typst("Runtime\n.NET pricing");
+    assert!(
+        result.contains("#linebreak();.NET pricing"),
+        "the break must be terminated before a leading field access: {result}"
     );
 }
 

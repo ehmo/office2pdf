@@ -702,6 +702,111 @@ fn test_fixed_page_text_box_compact_list_preserves_soft_line_breaks() {
 }
 
 #[test]
+fn test_fixed_page_text_box_soft_line_break_before_parenthesis_compiles() {
+    // A Korean slide run reads "첫째 줄" over "(2) 둘째 줄". CJK keeps the run
+    // off the advance grid and it carries no formatting wrapper, so the soft
+    // break's `#linebreak()` is followed by the bare text, which Typst would
+    // otherwise read as the break's argument list.
+    let doc = make_doc(vec![make_fixed_page(
+        960.0,
+        540.0,
+        vec![FixedElement {
+            x: 100.0,
+            y: 200.0,
+            width: 320.0,
+            height: 140.0,
+            kind: FixedElementKind::TextBox(crate::ir::TextBoxData {
+                content: vec![Block::Paragraph(Paragraph {
+                    style: ParagraphStyle::default(),
+                    runs: vec![Run {
+                        text: "첫째 줄\u{000B}(2) 둘째 줄".to_string(),
+                        style: TextStyle::default(),
+                        href: None,
+                        footnote: None,
+                    }],
+                })],
+                padding: Insets::default(),
+                vertical_align: crate::ir::TextBoxVerticalAlign::Top,
+                fill: None,
+                opacity: None,
+                stroke: None,
+                shape_kind: None,
+                no_wrap: false,
+                auto_fit: false,
+                text_rotation_deg: None,
+                shape_rotation_deg: None,
+            }),
+        }],
+    )]);
+    let output = generate_typst(&doc).unwrap();
+    assert!(
+        output.source.contains("#linebreak()#[(2)"),
+        "the bare text after the soft break must be wrapped: {}",
+        output.source
+    );
+    let pdf =
+        crate::render::pdf::compile_to_pdf(&output.source, &output.images, None, &[], false, false)
+            .unwrap_or_else(|error| panic!("compile failed: {error}\n{}", output.source));
+    assert!(pdf.starts_with(b"%PDF"));
+}
+
+#[test]
+fn test_fixed_page_text_box_grid_word_before_parenthesised_run_compiles() {
+    // A styleless ASCII run is emitted as `#o2p-pptx-word(...)`, which ends
+    // in `)`; a following Korean run starting with `(` leaves the grid and
+    // would otherwise be read as that call's argument list.
+    let doc = make_doc(vec![make_fixed_page(
+        960.0,
+        540.0,
+        vec![FixedElement {
+            x: 100.0,
+            y: 200.0,
+            width: 320.0,
+            height: 140.0,
+            kind: FixedElementKind::TextBox(crate::ir::TextBoxData {
+                content: vec![Block::Paragraph(Paragraph {
+                    style: ParagraphStyle::default(),
+                    runs: vec![
+                        Run {
+                            text: "Line 1".to_string(),
+                            style: TextStyle::default(),
+                            href: None,
+                            footnote: None,
+                        },
+                        Run {
+                            text: "(2) 둘째 줄".to_string(),
+                            style: TextStyle::default(),
+                            href: None,
+                            footnote: None,
+                        },
+                    ],
+                })],
+                padding: Insets::default(),
+                vertical_align: crate::ir::TextBoxVerticalAlign::Top,
+                fill: None,
+                opacity: None,
+                stroke: None,
+                shape_kind: None,
+                no_wrap: false,
+                auto_fit: false,
+                text_rotation_deg: None,
+                shape_rotation_deg: None,
+            }),
+        }],
+    )]);
+    let output = generate_typst(&doc).unwrap();
+    assert!(
+        output.source.contains("))#[(2)"),
+        "the bare text after the grid word must be wrapped: {}",
+        output.source
+    );
+    let pdf =
+        crate::render::pdf::compile_to_pdf(&output.source, &output.images, None, &[], false, false)
+            .unwrap_or_else(|error| panic!("compile failed: {error}\n{}", output.source));
+    assert!(pdf.starts_with(b"%PDF"));
+}
+
+#[test]
 fn test_fixed_page_text_box_with_width_height() {
     let doc = make_doc(vec![make_fixed_page(
         960.0,

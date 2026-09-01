@@ -2850,8 +2850,14 @@ fn write_run_content(out: &mut String, escaped: &str, style: &TextStyle) {
         return;
     }
 
+    // Markup that follows an embedded expression keeps parsing it: after a
+    // content block (`]`) or a call (`)`), a leading `(` is an argument
+    // list, `[` a trailing content argument, and `.name` a field access, so
+    // "(07) Western" after `#linebreak()` failed the whole document with
+    // "expected function, found content". A `#[...]` block ends the
+    // expression and renders the text unchanged.
     let needs_safety_wrap: bool = !escaped.is_empty()
-        && out.ends_with(']')
+        && (out.ends_with(']') || out.ends_with(')'))
         && !out.ends_with("\\]")
         && matches!(escaped.as_bytes()[0], b'(' | b'.' | b'[');
 
@@ -3273,8 +3279,12 @@ pub(super) fn escape_typst(text: &str) -> String {
             // A hard line break (`<w:br/>`, carried through the IR as '\n') must
             // force a new line. A bare newline in Typst markup collapses to a
             // space, which silently merged code lines like `echo` / `printf`
-            // (issue #176).
-            '\n' => result.push_str("#linebreak()"),
+            // (issue #176). The semicolon ends the code expression: the rest
+            // of this same string is bare markup, and a leading `(`, `[`, or
+            // `.name` in it would chain onto the break's content as a call or
+            // field access, failing the whole document with "expected
+            // function, found content".
+            '\n' => result.push_str("#linebreak();"),
             '\r' => {}
             // Word preserves literal space runs (xml:space="preserve") that
             // documents use for manual alignment and code indentation; Typst
