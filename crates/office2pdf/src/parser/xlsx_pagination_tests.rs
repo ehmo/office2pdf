@@ -359,6 +359,7 @@ fn text_box_extent_adds_page_columns_when_the_cell_grid_fits() {
         fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
         clip_left_pt: None,
         clip_width_pt: None,
     }];
@@ -396,6 +397,7 @@ fn drawing_extent_adds_pages_after_a_wide_cell_grid() {
         fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
         clip_left_pt: None,
         clip_width_pt: None,
     }];
@@ -530,6 +532,7 @@ fn continued_drawings_are_clipped_after_repeated_title_columns() {
         fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
         clip_left_pt: None,
         clip_width_pt: None,
     });
@@ -607,12 +610,12 @@ fn test_fit_to_width_scales_columns_onto_one_page() {
 }
 
 /// A chart is anchored to the sheet's columns and rows, so the fit-to-page
-/// scale that shrinks those has to carry it along; leaving it full size slid
-/// the fitted grid out from under it (issue #982).
+/// scale includes its right edge and carries it with the grid. Leaving the
+/// chart out of the fitted extent sends its right edge onto another page.
 #[test]
 fn test_fit_to_width_scales_an_anchored_chart_with_the_grid() {
     let mut page = make_page(
-        vec![400.0, 400.0],
+        vec![300.0, 300.0],
         vec![TableRow {
             minimum_height: None,
             cells: vec![cell("left"), cell("right")],
@@ -638,12 +641,12 @@ fn test_fit_to_width_scales_an_anchored_chart_with_the_grid() {
     let placement = pages[0].charts[0]
         .placement
         .expect("the chart keeps its placement");
-    assert_eq!(placement.x_offset_pt, 50.0);
-    assert_eq!(placement.y_offset_pt, 20.0);
+    assert!((placement.x_offset_pt - 57.0).abs() < 1e-9);
+    assert!((placement.y_offset_pt - 22.8).abs() < 1e-9);
     // The chart lays itself out in its full-size frame and is drawn shrunk,
     // so the box it occupies on the page is the frame times the scale.
-    assert_eq!(placement.width * placement.print_scale, 300.0);
-    assert_eq!(placement.height * placement.print_scale, 100.0);
+    assert!((placement.width * placement.print_scale - 342.0).abs() < 1e-9);
+    assert!((placement.height * placement.print_scale - 114.0).abs() < 1e-9);
 }
 
 /// Excel scales a printed sheet whole, drawings included, so the chart's own
@@ -717,6 +720,45 @@ fn test_fit_to_width_scales_an_anchored_picture_with_the_grid() {
     assert_eq!(picture.y_offset_pt, 20.0);
     assert_eq!(picture.image.width, Some(300.0));
     assert_eq!(picture.image.height, Some(100.0));
+}
+
+/// A text box is anchored to the sheet grid and carries its own text, so a
+/// fit-to-page scale must move it with the grid and shrink the complete shape.
+/// Leaving it at full size adds page columns that Excel does not print.
+#[test]
+fn test_fit_to_width_scales_an_anchored_text_box_with_the_grid() {
+    let mut page = make_page(
+        vec![400.0, 400.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("left"), cell("right")],
+            height: Some(20.0),
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 600.0,
+        y_offset_pt: 40.0,
+        width: 900.0,
+        height: 200.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_width(1), true);
+
+    assert_eq!(pages.len(), 1);
+    let text_box = &pages[0].text_boxes[0];
+    assert_eq!(text_box.print_scale, 0.26);
+    assert_eq!(text_box.x_offset_pt, 156.0);
+    assert_eq!(text_box.y_offset_pt, 10.4);
+    assert_eq!(text_box.width * text_box.print_scale, 234.0);
+    assert_eq!(text_box.height * text_box.print_scale, 52.0);
 }
 
 /// Excel's auto-fit scale is a whole percent, truncated so the content is
@@ -1172,7 +1214,7 @@ fn a_drawing_past_the_printable_edge_adds_a_page_column() {
     page.images.push(sheet_image(10.0, 100.0));
     page.images.push(sheet_image(350.0, 100.0));
 
-    let pages = split_drawing_only_page(page);
+    let pages = split_drawing_only_page(page, SheetFit::default());
     assert_eq!(pages.len(), 2);
 
     assert_eq!(pages[0].images.len(), 2);
@@ -1189,12 +1231,26 @@ fn a_drawing_past_the_printable_edge_adds_a_page_column() {
     assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
 }
 
+/// A drawing-only worksheet still obeys `fitToWidth`. Its drawing extent is
+/// the printable width that the scale is measured against.
+#[test]
+fn fit_to_width_scales_a_drawing_only_sheet_onto_one_page() {
+    let mut page = make_page(Vec::new(), Vec::new());
+    page.images.push(sheet_image(350.0, 100.0));
+
+    let pages = split_drawing_only_page(page, fit_to_width(1));
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].images[0].x_offset_pt, 308.0);
+    assert_eq!(pages[0].images[0].image.width, Some(88.0));
+}
+
 #[test]
 fn drawings_inside_the_printable_width_keep_one_page() {
     let mut page = make_page(Vec::new(), Vec::new());
     page.images.push(sheet_image(10.0, 100.0));
 
-    let pages = split_drawing_only_page(page);
+    let pages = split_drawing_only_page(page, SheetFit::default());
     assert_eq!(pages.len(), 1);
     assert_eq!(
         pages[0].images[0].clip_width_pt, None,

@@ -278,6 +278,9 @@ pub struct SheetTextBox {
     pub border: Option<super::elements::BorderSide>,
     /// bodyPr anchor="ctr": center text vertically inside the box.
     pub vertical_center: bool,
+    /// Whole-sheet print scale. Kept separate from the frame so the text,
+    /// inset, fill, and border shrink with the anchored shape.
+    pub print_scale: f64,
     /// Left edge of the page-column clipping window, in points from the
     /// page's content origin. `None` means zero.
     pub clip_left_pt: Option<f64>,

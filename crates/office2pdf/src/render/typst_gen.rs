@@ -1286,7 +1286,7 @@ fn write_placed_sheet_anchor(
                     "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
                     format_f64(left_pt + clip_left),
                     format_f64(clip_width),
-                    format_f64(text_box.height),
+                    format_f64(text_box.height * text_box.print_scale),
                     format_f64(text_box.x_offset_pt - clip_left),
                 );
                 true
@@ -1298,6 +1298,14 @@ fn write_placed_sheet_anchor(
                 );
                 false
             };
+            let fitted: bool = text_box.print_scale != 1.0;
+            if fitted {
+                let percent: String = format_f64((text_box.print_scale * 1e6).round() / 1e4);
+                let _ = write!(
+                    out,
+                    "#scale(x: {percent}%, y: {percent}%, origin: top + left)[",
+                );
+            }
             let _ = write!(
                 out,
                 "#box(width: {}pt, height: {}pt",
@@ -1325,7 +1333,11 @@ fn write_placed_sheet_anchor(
             if text_box.vertical_center {
                 out.push(']');
             }
-            out.push_str("]]");
+            out.push(']');
+            if fitted {
+                out.push(']');
+            }
+            out.push(']');
             if clipped {
                 out.push_str("]]");
             }

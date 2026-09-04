@@ -2017,6 +2017,7 @@ fn make_sheet_text_box(anchor_row: u32, x_offset_pt: f64, height: f64) -> crate:
         fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
         clip_left_pt: None,
         clip_width_pt: None,
     }
@@ -2065,6 +2066,29 @@ fn test_continued_sheet_text_box_is_clipped_to_its_page_column() {
     );
     crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
         .expect("the clipped text box compiles");
+}
+
+/// Fit-to-page scales a worksheet text box as one drawing, including its
+/// text, inset, fill and border. Resizing only the frame leaves the contents
+/// at their declared size.
+#[test]
+fn test_fitted_sheet_text_box_is_scaled_as_a_complete_shape() {
+    let mut text_box = make_sheet_text_box(3, 40.0, 60.0);
+    text_box.print_scale = 0.5;
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    let dx_pt: f64 = crate::defaults::DEFAULT_MARGIN_PT + 40.0;
+    let wrapper: String = format!(
+        "#place(top + left, dx: {dx_pt}pt)[#scale(x: 50%, y: 50%, origin: top + left)[#box(width: 100pt, height: 60pt"
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the complete text box is scaled from its anchor: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the fitted text box compiles");
 }
 
 #[test]

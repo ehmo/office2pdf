@@ -242,7 +242,15 @@ fn fit_page_to_pages(
     header_footer_scales_with_doc: bool,
 ) -> SheetPage {
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
-    let total_width: f64 = page.table.column_widths.iter().sum();
+    // Excel includes printable drawing objects in the fitted sheet extent.
+    // Using only the populated cells can choose a scale that fits the grid but
+    // still sends an anchored chart, picture, or text box onto extra pages.
+    let total_width: f64 = page
+        .table
+        .column_widths
+        .iter()
+        .sum::<f64>()
+        .max(drawing_right_extent(&page));
     let printable_height: f64 = page.size.height - page.margins.top - page.margins.bottom;
     let Some(scale) = [
         fit_scale(fit.pages_wide, printable_width, total_width),
@@ -346,6 +354,15 @@ fn scale_sheet_page(
         if let Some(height) = image.image.height.as_mut() {
             *height *= scale;
         }
+    }
+    // Text boxes carry text, padding, fill and a border, so their scale stays
+    // beside the full-size frame just as a chart's does. The renderer can then
+    // shrink the complete drawing instead of leaving full-size text in a
+    // smaller box.
+    for text_box in &mut page.text_boxes {
+        text_box.x_offset_pt *= scale;
+        text_box.y_offset_pt *= scale;
+        text_box.print_scale *= scale;
     }
     for row in &mut page.table.rows {
         if let Some(height) = row.height.as_mut() {
@@ -535,7 +552,7 @@ fn text_boxes_for_column_group(
     text_boxes
         .iter()
         .filter(|text_box| {
-            text_box.x_offset_pt + text_box.width > window_left
+            text_box.x_offset_pt + text_box.width * text_box.print_scale > window_left
                 && text_box.x_offset_pt < window_right
         })
         .map(|text_box| {
@@ -565,7 +582,7 @@ fn drawing_right_extent(page: &SheetPage) -> f64 {
     let text_box_extent: f64 = page
         .text_boxes
         .iter()
-        .map(|text_box| text_box.x_offset_pt + text_box.width)
+        .map(|text_box| text_box.x_offset_pt + text_box.width * text_box.print_scale)
         .fold(0.0, f64::max);
     image_right_extent(&page.images)
         .max(chart_extent)
@@ -683,7 +700,8 @@ fn slice_table_columns(table: &Table, start: usize, end: usize) -> Table {
 ///
 /// Every placed drawing on a split page carries its page-column clip window;
 /// a continued copy also carries a negative `x_offset_pt`.
-pub(super) fn split_drawing_only_page(page: SheetPage) -> Vec<SheetPage> {
+pub(super) fn split_drawing_only_page(page: SheetPage, fit: SheetFit) -> Vec<SheetPage> {
+    let page: SheetPage = fit_page_to_pages(page, fit, true);
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
     if printable_width <= 0.0 {
         return vec![page];

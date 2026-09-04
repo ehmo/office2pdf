@@ -3665,6 +3665,7 @@ fn test_centered_sheet_moves_its_drawings_with_the_grid() {
         fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
         clip_left_pt: None,
         clip_width_pt: None,
     });

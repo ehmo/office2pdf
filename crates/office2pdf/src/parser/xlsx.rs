@@ -205,6 +205,23 @@ fn sheet_fit(
     }
 }
 
+/// The horizontal fit bound for a sheet whose printable content is drawings
+/// rather than cells. It has no row track from which to measure a vertical
+/// fit, so only `fitToWidth` binds here.
+fn drawing_only_sheet_fit(
+    sheet_name: &str,
+    fitting_sheets: &std::collections::HashMap<String, fit_to_page::SheetFitToPage>,
+) -> xlsx_pagination::SheetFit {
+    let pages_wide: Option<u32> = fitting_sheets
+        .get(sheet_name)
+        .map(|fit| fit.pages_wide)
+        .filter(|pages| *pages > 0);
+    xlsx_pagination::SheetFit {
+        pages_wide,
+        ..xlsx_pagination::SheetFit::default()
+    }
+}
+
 /// The printed grid height of every row a sheet prints, in points.
 ///
 /// This is the same track a drawing anchor is measured against, not the
@@ -575,6 +592,7 @@ fn anchored_text_box(
         fill: anchor.fill,
         border: anchor.border,
         vertical_center: anchor.vertical_center,
+        print_scale: 1.0,
         clip_left_pt: None,
         clip_width_pt: None,
     }
@@ -791,20 +809,23 @@ impl XlsxParser {
                             metadata: metadata.clone(),
                             // Drawings past the printable width split into
                             // page-columns as Excel prints them (issue #713).
-                            pages: xlsx_pagination::split_drawing_only_page(SheetPage {
-                                name: sheet_name,
-                                size: sheet_page_size(
-                                    sheet,
-                                    pristine_paper_sheets.contains(sheet.get_name()),
-                                ),
-                                margins: sheet_print_margins(sheet),
-                                table: Table::default(),
-                                header: None,
-                                footer: None,
-                                charts,
-                                images,
-                                text_boxes,
-                            })
+                            pages: xlsx_pagination::split_drawing_only_page(
+                                SheetPage {
+                                    name: sheet_name,
+                                    size: sheet_page_size(
+                                        sheet,
+                                        pristine_paper_sheets.contains(sheet.get_name()),
+                                    ),
+                                    margins: sheet_print_margins(sheet),
+                                    table: Table::default(),
+                                    header: None,
+                                    footer: None,
+                                    charts,
+                                    images,
+                                    text_boxes,
+                                },
+                                drawing_only_sheet_fit(sheet.get_name(), &fitting_sheets),
+                            )
                             .into_iter()
                             .map(Page::Sheet)
                             .collect(),
@@ -1108,20 +1129,23 @@ impl Parser for XlsxParser {
                         // Drawings past the printable width split into
                         // page-columns as Excel prints them (issue #713).
                         pages.extend(
-                            xlsx_pagination::split_drawing_only_page(SheetPage {
-                                name: sheet_name,
-                                size: sheet_page_size(
-                                    sheet,
-                                    pristine_paper_sheets.contains(sheet.get_name()),
-                                ),
-                                margins: sheet_print_margins(sheet),
-                                table: Table::default(),
-                                header: None,
-                                footer: None,
-                                charts,
-                                images,
-                                text_boxes,
-                            })
+                            xlsx_pagination::split_drawing_only_page(
+                                SheetPage {
+                                    name: sheet_name,
+                                    size: sheet_page_size(
+                                        sheet,
+                                        pristine_paper_sheets.contains(sheet.get_name()),
+                                    ),
+                                    margins: sheet_print_margins(sheet),
+                                    table: Table::default(),
+                                    header: None,
+                                    footer: None,
+                                    charts,
+                                    images,
+                                    text_boxes,
+                                },
+                                drawing_only_sheet_fit(sheet.get_name(), &fitting_sheets),
+                            )
                             .into_iter()
                             .map(Page::Sheet),
                         );
