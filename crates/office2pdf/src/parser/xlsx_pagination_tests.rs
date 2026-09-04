@@ -1360,6 +1360,159 @@ fn fit_to_height_scales_a_drawing_only_sheet_onto_one_page() {
 }
 
 #[test]
+fn a_picture_continues_through_vertical_page_windows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].images[0].y_offset_pt, 400.0);
+    assert_eq!(pages[1].images[0].y_offset_pt, -300.0);
+    assert!(pages[1].table.rows.is_empty());
+}
+
+#[test]
+fn a_chart_continues_through_vertical_page_windows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.charts.push(crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 0.0,
+            y_offset_pt: 400.0,
+            width: 100.0,
+            height: 1000.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    });
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(
+        pages[1].charts[0]
+            .placement
+            .expect("the continued chart keeps its placement")
+            .y_offset_pt,
+        -300.0
+    );
+}
+
+#[test]
+fn a_text_box_continues_through_vertical_page_windows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.text_boxes.push(crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 0.0,
+        y_offset_pt: 400.0,
+        width: 100.0,
+        height: 1000.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    });
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[1].text_boxes[0].y_offset_pt, -300.0);
+}
+
+#[test]
+fn vertical_windows_run_down_before_the_next_page_column() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(350.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert_eq!(pages[0].images[0].x_offset_pt, 350.0);
+    assert_eq!(pages[0].images[0].y_offset_pt, 400.0);
+    assert_eq!(pages[1].images[0].x_offset_pt, 350.0);
+    assert_eq!(pages[1].images[0].y_offset_pt, -300.0);
+    assert_eq!(pages[2].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[2].images[0].y_offset_pt, 400.0);
+    assert_eq!(pages[3].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[3].images[0].y_offset_pt, -300.0);
+}
+
+#[test]
+fn a_drawing_only_picture_continues_through_vertical_page_windows() {
+    let mut page = make_page(Vec::new(), Vec::new());
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_drawing_only_page(page, SheetFit::default());
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[1].images[0].y_offset_pt, -300.0);
+}
+
+#[test]
+fn a_drawing_over_a_multi_page_grid_keeps_the_existing_flow_path() {
+    let rows = (0..40)
+        .map(|_| TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        })
+        .collect();
+    let mut page = make_page(vec![100.0], rows);
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].table.rows.len(), 40);
+}
+
+#[test]
 fn drawings_inside_the_printable_width_keep_one_page() {
     let mut page = make_page(Vec::new(), Vec::new());
     page.images.push(sheet_image(10.0, 100.0));

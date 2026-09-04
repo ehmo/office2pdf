@@ -955,7 +955,7 @@ fn generate_table_page(
     // below, have had the print scale folded into their sizes by the parser
     // and need that factor to recover the same coordinate system (#1238).
     let drawings: Option<SheetDrawingLayer> = with_sheet_advance_grid(Some(1.0), || {
-        sheet_drawing_layer(page, centering_inset_pt, ctx)
+        sheet_drawing_layer(page, &size, centering_inset_pt, ctx)
     });
 
     write_table_page_setup(
@@ -1055,6 +1055,15 @@ enum SheetAnchor<'a> {
     TextBox(&'a crate::ir::SheetTextBox),
 }
 
+/// Vertical bounds that keep a sheet drawing between its top and bottom print
+/// margins. The width spans the page because per-drawing horizontal clipping
+/// is retained when a horizontal page split supplied it.
+struct SheetDrawingClip {
+    top_pt: f64,
+    page_width_pt: f64,
+    printable_height_pt: f64,
+}
+
 /// Render a sheet's grid, under the marker its drawing layer is pinned to and
 /// above the charts no drawing anchors.
 fn generate_sheet_grid(
@@ -1127,6 +1136,7 @@ struct SheetDrawingLayer {
 /// margins and any centering inset are folded into them here.
 fn sheet_drawing_layer(
     page: &SheetPage,
+    size: &PageSize,
     centering_inset_pt: Option<f64>,
     ctx: &mut GenCtx,
 ) -> Option<SheetDrawingLayer> {
@@ -1149,6 +1159,11 @@ fn sheet_drawing_layer(
 
     let left_pt: f64 = page.margins.left + centering_inset_pt.unwrap_or(0.0);
     let top_pt: f64 = page.margins.top;
+    let clip = SheetDrawingClip {
+        top_pt,
+        page_width_pt: size.width,
+        printable_height_pt: size.height - page.margins.top - page.margins.bottom,
+    };
 
     let mut foreground = String::new();
     // Typst has no z-index, so the page a foreground belongs to is decided by
@@ -1166,7 +1181,8 @@ fn sheet_drawing_layer(
             &mut foreground,
             &SheetAnchor::Chart(sheet_chart),
             left_pt,
-            top_pt + placement.y_offset_pt,
+            &clip,
+            placement.y_offset_pt,
             ctx,
         );
     }
@@ -1175,7 +1191,8 @@ fn sheet_drawing_layer(
             &mut foreground,
             &SheetAnchor::Image(sheet_image),
             left_pt,
-            top_pt + sheet_image.y_offset_pt,
+            &clip,
+            sheet_image.y_offset_pt,
             ctx,
         );
     }
@@ -1184,7 +1201,8 @@ fn sheet_drawing_layer(
             &mut foreground,
             &SheetAnchor::TextBox(text_box),
             left_pt,
-            top_pt + text_box.y_offset_pt,
+            &clip,
+            text_box.y_offset_pt,
             ctx,
         );
     }
@@ -1193,19 +1211,29 @@ fn sheet_drawing_layer(
     Some(SheetDrawingLayer { foreground, marker })
 }
 
-/// Place one drawing at `dy` from the page top, inside the drawing layer's
-/// markup block. `left_pt` is what the drawing's own horizontal offset is
-/// measured from.
+/// Place one drawing inside the page's printable-height window. A continued
+/// copy may start above that window, so the inner placement uses its signed
+/// sheet offset while the clip box stays pinned between the page margins.
+/// `left_pt` is what the drawing's own horizontal offset is measured from.
 fn write_placed_sheet_drawing(
     out: &mut String,
     anchor: &SheetAnchor,
     left_pt: f64,
-    dy_pt: f64,
+    clip: &SheetDrawingClip,
+    y_offset_pt: f64,
     ctx: &mut GenCtx,
 ) {
-    let _ = write!(out, "#place(top + left, dy: {}pt)[", format_f64(dy_pt));
+    let _ = write!(
+        out,
+        "#place(top + left, dy: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dy: {}pt)[",
+        format_f64(clip.top_pt),
+        format_f64(clip.page_width_pt),
+        format_f64(clip.printable_height_pt),
+        format_f64(y_offset_pt),
+    );
+    let dy_pt: f64 = clip.top_pt + y_offset_pt;
     write_placed_sheet_anchor(out, anchor, left_pt, dy_pt, ctx);
-    out.push(']');
+    out.push_str("]]]");
 }
 
 /// Place one drawing at its horizontal offset, inside the vertical `#place`

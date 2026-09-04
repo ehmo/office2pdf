@@ -1,12 +1,15 @@
-//! Column-wise pagination for sheets wider than the printable page.
+//! Pagination for overflowing sheet grids and drawing-driven page windows.
 //!
-//! Excel prints columns that overflow the page width on subsequent pages
-//! (default order: down, then over). office2pdf previously clipped them at
-//! the right page edge, silently losing content.
+//! Excel prints overflow in down-then-over order. Splittable columns and
+//! drawings that cross the printable width continue in page-column windows; a
+//! single oversized column remains unsplit. Drawings that cross the printable
+//! height continue in page-row windows when the cell grid has fixed row heights
+//! and fits one printable page. Auto-height or multi-page grids stay on Typst's
+//! flow path until their row-break interaction is measured.
 //!
-//! A drawing-only sheet has no columns to split on, so its page-columns come
-//! from the drawings' extents instead ([`split_drawing_only_page`],
-//! issue #713).
+//! A drawing-only sheet has no rows or columns to split on, so both axes come
+//! from the drawings' extents instead ([`split_drawing_only_page`], issue
+//! #713).
 
 use crate::ir::{
     Block, HFInline, HeaderFooter, SheetChart, SheetImage, SheetPage, SheetTextBox, Table,
@@ -30,11 +33,14 @@ pub(super) struct SheetFit {
     pub(super) sheet_height_pt: f64,
 }
 
-/// Split a sheet page into column groups that each fit the printable width.
-/// Returns the page unchanged only when the cell grid and every drawing extent
-/// fit, or when the grid is one unsplittable column. `title_columns` is the
-/// 0-based inclusive-exclusive range of print-title columns (from
-/// `_xlnm.Print_Titles`) repeated at the left of every overflow page.
+/// Fit a sheet, split splittable columns into printable-width groups, then
+/// expand each group into printable-height drawing windows when every row has
+/// a fixed height and the grid fits one page. A single oversized column remains
+/// unsplit. Auto-height or multi-page grids keep Typst's existing vertical
+/// flow. `title_columns` is the 0-based
+/// inclusive-exclusive range of print-title columns (from
+/// `_xlnm.Print_Titles`) repeated at the left of every horizontal overflow
+/// page.
 pub(super) fn split_sheet_page_by_width(
     page: SheetPage,
     title_columns: Option<(usize, usize)>,
@@ -42,6 +48,16 @@ pub(super) fn split_sheet_page_by_width(
     header_footer_scales_with_doc: bool,
 ) -> Vec<SheetPage> {
     let page: SheetPage = fit_page_to_pages(page, fit, header_footer_scales_with_doc);
+    split_sheet_page_by_width_only(page, title_columns)
+        .into_iter()
+        .flat_map(split_page_by_drawing_height)
+        .collect()
+}
+
+fn split_sheet_page_by_width_only(
+    page: SheetPage,
+    title_columns: Option<(usize, usize)>,
+) -> Vec<SheetPage> {
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
     let total_width: f64 = page.table.column_widths.iter().sum();
     if total_width <= printable_width {
@@ -174,6 +190,116 @@ pub(super) fn split_sheet_page_by_width(
         window_left += window_width;
     }
     result
+}
+
+/// Continue drawings through printable-height windows when the cell grid fits
+/// one page and every row has a fixed height. A multi-page grid or any
+/// auto-height or unknown row height still follows Typst's flow pagination
+/// until its row breaks and repeated-title interaction have a measured rule.
+fn split_page_by_drawing_height(page: SheetPage) -> Vec<SheetPage> {
+    let printable_height: f64 = page.size.height - page.margins.top - page.margins.bottom;
+    if printable_height <= 0.0 {
+        return vec![page];
+    }
+    let Some(table_height) = page
+        .table
+        .rows
+        .iter()
+        .map(|row| row.height)
+        .try_fold(0.0, |sum, height| height.map(|height| sum + height))
+    else {
+        return vec![page];
+    };
+    if table_height > printable_height {
+        return vec![page];
+    }
+    let bottom_extent: f64 = drawing_bottom_extent(&page);
+    if bottom_extent <= printable_height {
+        return vec![page];
+    }
+    let group_count: usize = (bottom_extent / printable_height).ceil() as usize;
+    let mut empty_table: Table = page.table.clone();
+    empty_table.rows.clear();
+    empty_table.header_row_count = 0;
+    empty_table.non_repeating_header_row_count = 0;
+
+    (0..group_count)
+        .map(|group| {
+            let window_top: f64 = group as f64 * printable_height;
+            let mut paged: SheetPage = page.clone();
+            if group > 0 {
+                paged.table = empty_table.clone();
+            }
+            paged.charts = charts_for_row_group(&page.charts, window_top, printable_height);
+            paged.images = images_for_row_group(&page.images, window_top, printable_height);
+            paged.text_boxes =
+                text_boxes_for_row_group(&page.text_boxes, window_top, printable_height);
+            paged
+        })
+        .collect()
+}
+
+fn charts_for_row_group(
+    charts: &[SheetChart],
+    window_top: f64,
+    window_height: f64,
+) -> Vec<SheetChart> {
+    charts
+        .iter()
+        .filter_map(|chart| {
+            let Some(placement) = chart.placement else {
+                return (window_top == 0.0).then(|| chart.clone());
+            };
+            let bottom: f64 = placement.y_offset_pt + placement.height * placement.print_scale;
+            (bottom > window_top && placement.y_offset_pt < window_top + window_height).then(|| {
+                let mut paged = chart.clone();
+                paged
+                    .placement
+                    .as_mut()
+                    .expect("a placed chart keeps its placement")
+                    .y_offset_pt -= window_top;
+                paged
+            })
+        })
+        .collect()
+}
+
+fn images_for_row_group(
+    images: &[SheetImage],
+    window_top: f64,
+    window_height: f64,
+) -> Vec<SheetImage> {
+    images
+        .iter()
+        .filter(|image| {
+            let bottom: f64 = image.y_offset_pt + image.image.height.unwrap_or(0.0);
+            bottom > window_top && image.y_offset_pt < window_top + window_height
+        })
+        .map(|image| {
+            let mut paged = image.clone();
+            paged.y_offset_pt -= window_top;
+            paged
+        })
+        .collect()
+}
+
+fn text_boxes_for_row_group(
+    text_boxes: &[SheetTextBox],
+    window_top: f64,
+    window_height: f64,
+) -> Vec<SheetTextBox> {
+    text_boxes
+        .iter()
+        .filter(|text_box| {
+            let bottom: f64 = text_box.y_offset_pt + text_box.height * text_box.print_scale;
+            bottom > window_top && text_box.y_offset_pt < window_top + window_height
+        })
+        .map(|text_box| {
+            let mut paged = text_box.clone();
+            paged.y_offset_pt -= window_top;
+            paged
+        })
+        .collect()
 }
 
 /// Add printable-width page-columns when the cell grid fits but a drawing
@@ -708,8 +834,7 @@ fn slice_table_columns(table: &Table, start: usize, end: usize) -> Table {
     }
 }
 
-/// Split a drawing-only sheet into page-columns at printable-width
-/// boundaries.
+/// Split a drawing-only sheet into page windows across both printable axes.
 ///
 /// Excel prints a drawing that crosses the printable edge clipped there and
 /// continues it on the next page-column. The empty-sheet branch previously
@@ -719,10 +844,18 @@ fn slice_table_columns(table: &Table, start: usize, end: usize) -> Table {
 /// [`split_sheet_page_by_width`] has no column widths to split on; the
 /// drawings' extents drive the paging instead.
 ///
-/// Every placed drawing on a split page carries its page-column clip window;
-/// a continued copy also carries a negative `x_offset_pt`.
+/// On a horizontal split, every placed drawing carries its page-column clip
+/// window. The renderer applies the page-row clip to every page, and a
+/// continued copy can carry a negative `x_offset_pt`, `y_offset_pt`, or both.
 pub(super) fn split_drawing_only_page(page: SheetPage, fit: SheetFit) -> Vec<SheetPage> {
     let page: SheetPage = fit_page_to_pages(page, fit, true);
+    split_drawing_only_page_by_width(page)
+        .into_iter()
+        .flat_map(split_page_by_drawing_height)
+        .collect()
+}
+
+fn split_drawing_only_page_by_width(page: SheetPage) -> Vec<SheetPage> {
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
     if printable_width <= 0.0 {
         return vec![page];

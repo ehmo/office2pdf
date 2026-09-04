@@ -4475,13 +4475,21 @@ fn an_anchored_excel_worksheet_chart_snaps_interior_gridlines_in_sheet_space() {
     chart.value_axis_major_unit = Some(20.0);
     let source: String = anchored_excel_gift_chart_source(chart, EXCEL_GIFT_CHART_SPACE_FRAME_TOP);
 
-    let page_frame_top = leading_pt(
-        source
-            .split_once("#place(top + left, dy: ")
-            .expect("the sheet places its drawing layer chart")
-            .1,
+    let drawing_place_prefix = "#place(top + left, dy: ";
+    let mut drawing_places = source.split(drawing_place_prefix).skip(1);
+    let clip_top = leading_pt(
+        drawing_places
+            .next()
+            .expect("the sheet pins its printable-height clipping window"),
     )
-    .expect("the chart page offset is a point measurement");
+    .expect("the clipping window page offset is a point measurement");
+    let drawing_offset = leading_pt(
+        drawing_places
+            .next()
+            .expect("the sheet places its chart inside the clipping window"),
+    )
+    .expect("the chart sheet offset is a point measurement");
+    let page_frame_top = clip_top + drawing_offset;
     let chart_space_frame_top = page_frame_top / EXCEL_GIFT_PRINT_SCALE;
     assert!(
         (chart_space_frame_top - EXCEL_GIFT_CHART_SPACE_FRAME_TOP).abs() <= 0.001,

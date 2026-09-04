@@ -2068,6 +2068,33 @@ fn test_continued_sheet_text_box_is_clipped_to_its_page_column() {
         .expect("the clipped text box compiles");
 }
 
+/// A drawing continued from the worksheet interval above this page is shifted
+/// upward inside the printable-height window. The window keeps the preceding
+/// slice out of the top margin and the following slice out of the bottom one.
+#[test]
+fn test_continued_sheet_text_box_is_clipped_to_its_page_row() {
+    let mut text_box = make_sheet_text_box(1, 40.0, 800.0);
+    text_box.y_offset_pt = -50.0;
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    let size = PageSize::default();
+    let margins = Margins::default();
+    let wrapper: String = format!(
+        "#place(top + left, dy: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dy: -50pt)[",
+        format_f64(margins.top),
+        format_f64(size.width),
+        format_f64(size.height - margins.top - margins.bottom),
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the continued text box is shifted inside a page-height clipping box: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the vertically clipped text box compiles");
+}
+
 /// Fit-to-page scales a worksheet text box as one drawing, including its
 /// text, inset, fill and border. Resizing only the frame leaves the contents
 /// at their declared size.
@@ -2130,9 +2157,15 @@ fn test_sheet_drawings_overlay_the_grid_at_absolute_offsets() {
         !source.contains("#box(width: 100%, height: 0pt)"),
         "the marker must not be inline content: {source}"
     );
-    // Row 3's top edge is two 20pt rows down.
+    // Row 3's top edge is two 20pt rows down inside the printable-height
+    // window. The window itself begins at the top margin.
     assert_eq!(
-        source.matches(&format!("dy: {}pt", margin + 40.0)).count(),
+        source.matches(&format!("dy: {}pt", margin)).count(),
+        3,
+        "each drawing uses the same printable-height window: {source}"
+    );
+    assert_eq!(
+        source.matches("dy: 40pt").count(),
         3,
         "same-row drawings share one vertical origin: {source}"
     );

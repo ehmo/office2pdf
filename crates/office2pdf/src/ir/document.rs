@@ -226,7 +226,8 @@ pub struct SheetChart {
 pub struct SheetChartPlacement {
     /// Horizontal offset of the anchor from the sheet's left edge, points.
     pub x_offset_pt: f64,
-    /// Vertical offset of the anchor from the sheet's content top, points.
+    /// Vertical offset of the anchor from the sheet's content top, points. A
+    /// continued page-row copy is relative to that window and can be negative.
     pub y_offset_pt: f64,
     /// Width in points, from the columns the anchor spans, before
     /// `print_scale`.
@@ -267,7 +268,8 @@ pub struct SheetTextBox {
     /// Horizontal offset of the anchor from the sheet's left edge, points.
     pub x_offset_pt: f64,
     /// Vertical offset of the anchor from the sheet's content top, points
-    /// (issue #474).
+    /// (issue #474). A continued page-row copy is relative to that window and
+    /// can be negative.
     pub y_offset_pt: f64,
     pub width: f64,
     pub height: f64,
@@ -299,8 +301,9 @@ pub struct SheetImage {
     /// Horizontal offset of the anchor from the sheet's left edge, points.
     pub x_offset_pt: f64,
     /// Vertical offset of the anchor from the sheet's content top, points.
-    /// Excel overlays drawings on the grid at absolute worksheet
-    /// coordinates rather than placing them between rows (issue #474).
+    /// Excel overlays drawings on the grid at absolute worksheet coordinates
+    /// rather than placing them between rows (issue #474). A continued
+    /// page-row copy is relative to that window and can be negative.
     pub y_offset_pt: f64,
     pub image: super::elements::ImageData,
     /// Left edge of the page-column clipping window, in points from the

@@ -951,13 +951,17 @@ fn test_table_page_with_anchored_chart_overlays_the_grid() {
     // Excel floats an anchored chart over the cells, so the grid keeps every
     // row in one table instead of being cut into segments around it (#982).
     assert_eq!(src.matches("#table(").count(), 1);
-    // The anchor's offsets are the sheet content origin's, and the drawing
-    // layer measures from the page corner, so each carries its margin.
-    let margin: f64 = crate::defaults::DEFAULT_MARGIN_PT;
+    // The printable-height clip begins at the top margin. Inside it, the
+    // chart keeps its sheet-relative vertical offset; its horizontal offset
+    // remains page-relative and therefore carries the left margin.
+    let size = PageSize::default();
+    let margins = Margins::default();
     let placement: String = format!(
-        "#place(top + left, dy: {}pt)[#place(top + left, dx: {}pt)[",
-        margin + 60.0,
-        margin + 40.0
+        "#place(top + left, dy: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dy: 60pt)[#place(top + left, dx: {}pt)[",
+        format_f64(margins.top),
+        format_f64(size.width),
+        format_f64(size.height - margins.top - margins.bottom),
+        format_f64(margins.left + 40.0),
     );
     let overlay: usize = src
         .find(&placement)
