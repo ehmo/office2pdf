@@ -57,6 +57,14 @@ fn fit_to_width(pages_wide: u32) -> SheetFit {
     }
 }
 
+fn fit_to_height(pages_tall: u32, sheet_height_pt: f64) -> SheetFit {
+    SheetFit {
+        pages_tall: Some(pages_tall),
+        sheet_height_pt,
+        ..SheetFit::default()
+    }
+}
+
 fn make_page(column_widths: Vec<f64>, rows: Vec<TableRow>) -> SheetPage {
     SheetPage {
         name: "Sheet1".to_string(),
@@ -844,6 +852,97 @@ fn test_fit_to_height_scales_rows_onto_one_page() {
     assert_eq!(pages[0].table.column_widths, vec![50.0, 50.0]);
 }
 
+#[test]
+fn test_fit_to_height_includes_an_anchored_picture_extent() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images = vec![picture];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_height(1, 20.0), true);
+
+    assert_eq!(pages[0].images[0].y_offset_pt, 200.0);
+    assert_eq!(pages[0].images[0].image.height, Some(500.0));
+    assert_eq!(pages[0].table.rows[0].height, Some(10.0));
+}
+
+#[test]
+fn test_fit_to_height_includes_an_anchored_chart_extent() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.charts = vec![crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 0.0,
+            y_offset_pt: 400.0,
+            width: 100.0,
+            height: 1000.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_height(1, 20.0), true);
+
+    let placement = pages[0].charts[0]
+        .placement
+        .expect("the chart keeps its placement");
+    assert_eq!(placement.print_scale, 0.5);
+    assert_eq!(placement.y_offset_pt, 200.0);
+    assert_eq!(placement.height * placement.print_scale, 500.0);
+}
+
+#[test]
+fn test_fit_to_height_includes_an_anchored_text_box_extent() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 0.0,
+        y_offset_pt: 400.0,
+        width: 100.0,
+        height: 1000.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_height(1, 20.0), true);
+
+    assert_eq!(pages[0].text_boxes[0].print_scale, 0.5);
+    assert_eq!(pages[0].text_boxes[0].y_offset_pt, 200.0);
+    assert_eq!(
+        pages[0].text_boxes[0].height * pages[0].text_boxes[0].print_scale,
+        500.0
+    );
+}
+
 /// Excel scales a fitted sheet by the tighter of its two bounds, not by
 /// whichever one it reads first. The reported college-budget workbook fits
 /// A3's width at 0.89 and its height at 0.78, and Excel prints it at 0.78
@@ -1243,6 +1342,21 @@ fn fit_to_width_scales_a_drawing_only_sheet_onto_one_page() {
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].images[0].x_offset_pt, 308.0);
     assert_eq!(pages[0].images[0].image.width, Some(88.0));
+}
+
+#[test]
+fn fit_to_height_scales_a_drawing_only_sheet_onto_one_page() {
+    let mut page = make_page(Vec::new(), Vec::new());
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_drawing_only_page(page, fit_to_height(1, 0.0));
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].images[0].y_offset_pt, 200.0);
+    assert_eq!(pages[0].images[0].image.height, Some(500.0));
 }
 
 #[test]

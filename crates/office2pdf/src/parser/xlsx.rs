@@ -205,19 +205,18 @@ fn sheet_fit(
     }
 }
 
-/// The horizontal fit bound for a sheet whose printable content is drawings
-/// rather than cells. It has no row track from which to measure a vertical
-/// fit, so only `fitToWidth` binds here.
+/// The declared fit bounds for a sheet whose printable content is drawings
+/// rather than cells. The drawing extents supply the width and height that
+/// these bounds are measured against.
 fn drawing_only_sheet_fit(
     sheet_name: &str,
     fitting_sheets: &std::collections::HashMap<String, fit_to_page::SheetFitToPage>,
 ) -> xlsx_pagination::SheetFit {
-    let pages_wide: Option<u32> = fitting_sheets
-        .get(sheet_name)
-        .map(|fit| fit.pages_wide)
-        .filter(|pages| *pages > 0);
+    let declared: Option<&fit_to_page::SheetFitToPage> = fitting_sheets.get(sheet_name);
+    let bound = |pages: u32| -> Option<u32> { (pages > 0).then_some(pages) };
     xlsx_pagination::SheetFit {
-        pages_wide,
+        pages_wide: declared.and_then(|fit| bound(fit.pages_wide)),
+        pages_tall: declared.and_then(|fit| bound(fit.pages_tall)),
         ..xlsx_pagination::SheetFit::default()
     }
 }

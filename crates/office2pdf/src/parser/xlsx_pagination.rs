@@ -22,11 +22,11 @@ pub(super) struct SheetFit {
     pub(super) pages_wide: Option<u32>,
     /// `fitToHeight` when it binds; `None` leaves the row direction free.
     pub(super) pages_tall: Option<u32>,
-    /// The printed grid height of the *whole* sheet in points, which is what
-    /// the row bound is measured against. The page handed to pagination may
-    /// carry one streaming chunk or one explicit-break segment of that sheet,
-    /// so its own rows cannot supply the total. Unread when `pages_tall` is
-    /// `None`.
+    /// The printed cell-grid height of the *whole* sheet in points. Pagination
+    /// combines it with the bottom-most anchored drawing edge before measuring
+    /// the row bound. The page handed to pagination may carry one streaming
+    /// chunk or one explicit-break segment of that sheet, so its own rows
+    /// cannot supply the grid total. Unread when `pages_tall` is `None`.
     pub(super) sheet_height_pt: f64,
 }
 
@@ -252,9 +252,10 @@ fn fit_page_to_pages(
         .sum::<f64>()
         .max(drawing_right_extent(&page));
     let printable_height: f64 = page.size.height - page.margins.top - page.margins.bottom;
+    let total_height: f64 = fit.sheet_height_pt.max(drawing_bottom_extent(&page));
     let Some(scale) = [
         fit_scale(fit.pages_wide, printable_width, total_width),
-        fit_scale(fit.pages_tall, printable_height, fit.sheet_height_pt),
+        fit_scale(fit.pages_tall, printable_height, total_height),
     ]
     .into_iter()
     .flatten()
@@ -587,6 +588,26 @@ fn drawing_right_extent(page: &SheetPage) -> f64 {
     image_right_extent(&page.images)
         .max(chart_extent)
         .max(text_box_extent)
+}
+
+fn drawing_bottom_extent(page: &SheetPage) -> f64 {
+    let chart_extent: f64 = page
+        .charts
+        .iter()
+        .filter_map(|chart| chart.placement)
+        .map(|placement| placement.y_offset_pt + placement.height * placement.print_scale)
+        .fold(0.0, f64::max);
+    let image_extent: f64 = page
+        .images
+        .iter()
+        .map(|image| image.y_offset_pt + image.image.height.unwrap_or(0.0))
+        .fold(0.0, f64::max);
+    let text_box_extent: f64 = page
+        .text_boxes
+        .iter()
+        .map(|text_box| text_box.y_offset_pt + text_box.height * text_box.print_scale)
+        .fold(0.0, f64::max);
+    image_extent.max(chart_extent).max(text_box_extent)
 }
 
 /// Build a table containing only columns `[start, end)`, truncating cell
