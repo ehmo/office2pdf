@@ -14,8 +14,8 @@
 
 use crate::error::ConvertError;
 use crate::ir::{
-    Block, HFInline, HeaderFooter, SheetChart, SheetImage, SheetPage, SheetTextBox, Table,
-    TableCell, TableRow,
+    Alignment, Block, HFInline, HeaderFooter, Insets, SheetChart, SheetImage, SheetPage,
+    SheetTextBox, Table, TableCell, TableRow,
 };
 
 /// What one sheet's `<pageSetUpPr fitToPage="1"/>` asks pagination to scale it
@@ -79,6 +79,174 @@ pub(super) fn ensure_supported_vertical_drawing_flow(
     })
 }
 
+/// Refuse visible merged-cell flows the horizontal slicer cannot preserve.
+/// One-line left-aligned text is partitioned across page windows. Centered text
+/// is safe only when all its ink remains in the first window. Empty merges keep
+/// their border and fill. Wrapped text, right alignment, title-column overlap,
+/// icons, and data bars refuse instead of returning a misleading PDF.
+pub(super) fn ensure_supported_horizontal_merged_cell_flow(
+    page: &SheetPage,
+    title_columns: Option<(usize, usize)>,
+    fit: SheetFit,
+    header_footer_scales_with_doc: bool,
+) -> Result<(), ConvertError> {
+    let fitted = fit_page_to_pages(page.clone(), fit, header_footer_scales_with_doc);
+    let printable_width: f64 = fitted.size.width - fitted.margins.left - fitted.margins.right;
+    let column_count: usize = fitted.table.column_widths.len();
+    let total_width: f64 = fitted.table.column_widths.iter().sum();
+    if printable_width <= 0.0 || column_count <= 1 || total_width <= printable_width {
+        return Ok(());
+    }
+
+    let title_columns: Option<(usize, usize)> = bounded_title_columns(title_columns, column_count);
+    let (groups, _): (Vec<(usize, usize)>, f64) =
+        page_column_groups(&fitted.table.column_widths, printable_width, title_columns);
+    if groups.len() <= 1 {
+        return Ok(());
+    }
+    let boundaries: Vec<usize> = groups
+        .iter()
+        .take(groups.len() - 1)
+        .map(|(_, end)| *end)
+        .collect();
+
+    // Rows omit the cells covered by an earlier row-spanning cell. Track
+    // those seats so every remaining cell keeps its worksheet column index.
+    let mut rowspan_remaining: Vec<usize> = vec![0; column_count];
+    for row in &fitted.table.rows {
+        let mut column_cursor: usize = 0;
+        for cell in &row.cells {
+            while column_cursor < column_count && rowspan_remaining[column_cursor] > 0 {
+                rowspan_remaining[column_cursor] -= 1;
+                column_cursor += 1;
+            }
+            if column_cursor >= column_count {
+                break;
+            }
+            let cell_start: usize = column_cursor;
+            let cell_end: usize = (column_cursor + cell.col_span.max(1) as usize).min(column_count);
+            let crosses_boundary: bool = boundaries
+                .iter()
+                .any(|boundary| cell_start < *boundary && *boundary < cell_end);
+            let has_visible_content: bool =
+                !cell.content.is_empty() || cell.icon_text.is_some() || cell.data_bar.is_some();
+            let overlaps_title_columns: bool =
+                title_columns.is_some_and(|(start, end)| cell_start < end && start < cell_end);
+            if crosses_boundary
+                && has_visible_content
+                && (overlaps_title_columns
+                    || (!can_continue_left_merged_cell(cell)
+                        && !centered_merged_cell_ink_fits_first_window(
+                            cell,
+                            &fitted.table.column_widths,
+                            cell_start,
+                            cell_end,
+                            &boundaries,
+                        )))
+            {
+                return Err(ConvertError::UnsupportedElement {
+                    format: "XLSX",
+                    element: "merged cell across a horizontal page break".to_string(),
+                });
+            }
+            if cell.row_span > 1 {
+                for occupied in rowspan_remaining.iter_mut().take(cell_end).skip(cell_start) {
+                    *occupied = (cell.row_span - 1) as usize;
+                }
+            }
+            column_cursor = cell_end;
+        }
+        while column_cursor < column_count {
+            if rowspan_remaining[column_cursor] > 0 {
+                rowspan_remaining[column_cursor] -= 1;
+            }
+            column_cursor += 1;
+        }
+    }
+    Ok(())
+}
+
+fn centered_merged_cell_ink_fits_first_window(
+    cell: &TableCell,
+    column_widths: &[f64],
+    cell_start: usize,
+    cell_end: usize,
+    boundaries: &[usize],
+) -> bool {
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return false;
+    };
+    if paragraph.style.alignment != Some(Alignment::Center)
+        || paragraph.runs.iter().any(|run| run.text.contains('\n'))
+        || cell.icon_text.is_some()
+        || cell.data_bar.is_some()
+    {
+        return false;
+    }
+    let Some(boundary) = boundaries
+        .iter()
+        .copied()
+        .find(|boundary| cell_start < *boundary && *boundary < cell_end)
+    else {
+        return false;
+    };
+    let merge_width: f64 = column_widths[cell_start..cell_end].iter().sum();
+    let first_window_width: f64 = column_widths[cell_start..boundary].iter().sum();
+    let padding: Insets = cell.padding.unwrap_or(Insets {
+        top: 5.0,
+        right: 5.0,
+        bottom: 5.0,
+        left: 5.0,
+    });
+    let text_width: f64 = super::xlsx_cells::estimate_text_width_pt(&paragraph.runs);
+    let text_center: f64 = (merge_width + padding.left - padding.right) / 2.0;
+    text_center + text_width / 2.0 <= first_window_width
+}
+
+fn can_continue_left_merged_cell(cell: &TableCell) -> bool {
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return false;
+    };
+    cell.spill_width.is_some()
+        && matches!(paragraph.style.alignment, None | Some(Alignment::Left))
+        && paragraph.runs.iter().all(|run| !run.text.contains('\n'))
+        && cell.icon_text.is_none()
+        && cell.data_bar.is_none()
+}
+
+fn left_merged_cell_content_window(content: &[Block], start_pt: f64, end_pt: f64) -> Vec<Block> {
+    let [Block::Paragraph(paragraph)] = content else {
+        return Vec::new();
+    };
+    let mut paragraph = paragraph.clone();
+    let mut cursor_pt: f64 = 0.0;
+    paragraph.runs = paragraph
+        .runs
+        .iter()
+        .filter_map(|source_run| {
+            let mut run = source_run.clone();
+            run.text = source_run
+                .text
+                .chars()
+                .filter(|character| {
+                    let glyph_start_pt: f64 = cursor_pt;
+                    cursor_pt += super::xlsx_cells::estimate_character_width_pt(
+                        *character,
+                        source_run.style.font_family.as_deref(),
+                        source_run.style.font_size.unwrap_or(11.0),
+                    );
+                    glyph_start_pt >= start_pt && glyph_start_pt < end_pt
+                })
+                .collect();
+            (!run.text.is_empty()).then_some(run)
+        })
+        .collect();
+    (!paragraph.runs.is_empty())
+        .then_some(Block::Paragraph(paragraph))
+        .into_iter()
+        .collect()
+}
+
 /// Fit a sheet, split splittable columns into printable-width groups, then
 /// expand each group into printable-height drawing windows when every row has
 /// a fixed height and the grid fits one page. A single oversized column remains
@@ -114,26 +282,15 @@ fn split_sheet_page_by_width_only(
         return vec![page];
     }
 
-    let title_columns: Option<(usize, usize)> = title_columns
-        .map(|(start, end)| (start, end.min(page.table.column_widths.len())))
-        .filter(|(start, end)| start < end);
+    let title_columns: Option<(usize, usize)> =
+        bounded_title_columns(title_columns, page.table.column_widths.len());
     // Reserve the repeated title width so overflow groups still fit the
     // page. The first group holds the title columns physically (they never
     // get prepended to it), so it packs against the full printable width —
     // reserving there too underpacked page 1 by the title width (issue #623
     // adversarial review, finding 3).
-    let title_width: f64 = title_columns
-        .map(|(start, end)| page.table.column_widths[start..end].iter().sum())
-        .unwrap_or(0.0);
-    let widest_column: f64 = page.table.column_widths.iter().cloned().fold(0.0, f64::max);
-    let first_group_packing_width: f64 = printable_width.max(widest_column);
-    let overflow_packing_width: f64 = (printable_width - title_width).max(widest_column);
-
-    let groups: Vec<(usize, usize)> = column_groups(
-        &page.table.column_widths,
-        first_group_packing_width,
-        overflow_packing_width,
-    );
+    let (groups, title_width): (Vec<(usize, usize)>, f64) =
+        page_column_groups(&page.table.column_widths, printable_width, title_columns);
     if groups.len() <= 1 {
         return vec![page];
     }
@@ -655,6 +812,35 @@ fn column_groups(
     groups
 }
 
+fn bounded_title_columns(
+    title_columns: Option<(usize, usize)>,
+    column_count: usize,
+) -> Option<(usize, usize)> {
+    title_columns
+        .map(|(start, end)| (start, end.min(column_count)))
+        .filter(|(start, end)| start < end)
+}
+
+/// Calculate the exact column groups used by both parser preflight and the
+/// renderer-facing slicer. Keeping this in one function prevents a supported
+/// preflight case from later crossing a different render boundary.
+fn page_column_groups(
+    column_widths: &[f64],
+    printable_width: f64,
+    title_columns: Option<(usize, usize)>,
+) -> (Vec<(usize, usize)>, f64) {
+    let title_width: f64 = title_columns
+        .map(|(start, end)| column_widths[start..end].iter().sum())
+        .unwrap_or(0.0);
+    let widest_column: f64 = column_widths.iter().copied().fold(0.0, f64::max);
+    let groups = column_groups(
+        column_widths,
+        printable_width.max(widest_column),
+        (printable_width - title_width).max(widest_column),
+    );
+    (groups, title_width)
+}
+
 /// Copy each image to every page-column window it intersects. Coordinates on
 /// the copy are relative to that page's table, after any repeated print-title
 /// columns, and the renderer clips the image to the window instead of drawing
@@ -783,17 +969,12 @@ fn drawing_bottom_extent(page: &SheetPage) -> f64 {
     image_extent.max(chart_extent).max(text_box_extent)
 }
 
-/// Build a table containing only columns `[start, end)`, truncating cell
-/// spans at the group boundary. A merged cell that starts before the group
-/// keeps its geometry (background/border) but blanks its content.
-///
-/// That blanking is a stopgap, not a match for how a spreadsheet application
-/// prints the continuation. A LibreOffice render of
-/// `tests/fixtures/xlsx/merged_row_overflows_page_column.xlsx` redraws the
-/// merge's line on the following page-column at a negative x so its tail lands
-/// there, rather than leaving the cell empty. Reproducing that is #631; no
-/// native Excel export has been measured yet, so the exact geometry is
-/// corroborated rather than settled.
+/// Build a table containing only columns `[start, end)`, truncating cell spans
+/// at the group boundary. One-line left-aligned merged text is partitioned by
+/// glyph start so its selectable characters occur once across all windows.
+/// Centered text that fits wholly before the first boundary keeps its original
+/// seat through an adjusted inset. Empty merges retain their border and fill;
+/// parser preflight refuses other visible cross-window constructs.
 fn slice_table_columns(table: &Table, start: usize, end: usize) -> Table {
     let column_count: usize = table.column_widths.len();
     // Tracks rows still covered by a row-spanning cell, per column.
@@ -828,8 +1009,60 @@ fn slice_table_columns(table: &Table, start: usize, end: usize) -> Table {
             if overlap_start < overlap_end {
                 let mut sliced: TableCell = cell.clone();
                 sliced.col_span = (overlap_end - overlap_start) as u32;
-                if cell_start < start {
-                    // Continuation of a merge that began on an earlier page.
+                let crosses_group_edge: bool = cell_start < start || cell_end > end;
+                if crosses_group_edge && can_continue_left_merged_cell(cell) {
+                    let default_padding: Insets = table.default_cell_padding.unwrap_or(Insets {
+                        top: 5.0,
+                        right: 5.0,
+                        bottom: 5.0,
+                        left: 5.0,
+                    });
+                    let original_padding: Insets = cell.padding.unwrap_or(default_padding);
+                    let window_start_pt: f64 =
+                        table.column_widths[cell_start..overlap_start].iter().sum();
+                    let window_end_pt: f64 =
+                        table.column_widths[cell_start..overlap_end].iter().sum();
+                    sliced.content = left_merged_cell_content_window(
+                        &cell.content,
+                        (window_start_pt - original_padding.left).max(0.0),
+                        (window_end_pt - original_padding.left).max(0.0),
+                    );
+                    let available: f64 =
+                        table.column_widths[overlap_start..overlap_end].iter().sum();
+                    sliced.spill_width = (!sliced.content.is_empty()).then_some(available);
+                    if cell_start < start {
+                        sliced.padding = Some(Insets {
+                            left: 0.0,
+                            ..original_padding
+                        });
+                    }
+                } else if cell_end > end
+                    && centered_merged_cell_ink_fits_first_window(
+                        cell,
+                        &table.column_widths,
+                        cell_start,
+                        cell_end,
+                        &[end],
+                    )
+                {
+                    let default_padding: Insets = table.default_cell_padding.unwrap_or(Insets {
+                        top: 5.0,
+                        right: 5.0,
+                        bottom: 5.0,
+                        left: 5.0,
+                    });
+                    let original_padding: Insets = cell.padding.unwrap_or(default_padding);
+                    let full_width: f64 = table.column_widths[cell_start..cell_end].iter().sum();
+                    let available: f64 =
+                        table.column_widths[overlap_start..overlap_end].iter().sum();
+                    sliced.padding = Some(Insets {
+                        left: original_padding.left + full_width - available,
+                        ..original_padding
+                    });
+                    sliced.spill_width = Some(available);
+                } else if cell_start < start {
+                    // A non-text continuation is blanked. Parser preflight
+                    // refuses visible unsupported cases before this slicer.
                     sliced.content = Vec::new();
                     sliced.spill_width = None;
                 } else if let Some(spill) = sliced.spill_width {

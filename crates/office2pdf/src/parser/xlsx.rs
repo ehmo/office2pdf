@@ -1005,6 +1005,12 @@ impl XlsxParser {
                     !row_breaks.is_empty(),
                     chunk_end < row_end,
                 )?;
+                xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                    &sheet_page,
+                    title_columns,
+                    fit,
+                    header_footer_scales_with_doc,
+                )?;
                 let doc = Document {
                     metadata: metadata.clone(),
                     pages: xlsx_pagination::split_sheet_page_by_width(
@@ -1305,6 +1311,12 @@ impl Parser for XlsxParser {
                     false,
                     false,
                 )?;
+                xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                    &sheet_page,
+                    title_columns,
+                    fit,
+                    header_footer_scales_with_doc,
+                )?;
                 pages.extend(
                     xlsx_pagination::split_sheet_page_by_width(
                         sheet_page,
@@ -1440,6 +1452,12 @@ impl Parser for XlsxParser {
                         header_footer_scales_with_doc,
                         true,
                         false,
+                    )?;
+                    xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                        &sheet_page,
+                        title_columns,
+                        fit,
+                        header_footer_scales_with_doc,
                     )?;
                     pages.extend(
                         xlsx_pagination::split_sheet_page_by_width(

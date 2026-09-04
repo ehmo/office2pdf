@@ -1065,7 +1065,7 @@ const ASCII_ADVANCE_RATIO: [f64; 95] = [
 
 /// Single-line text width estimate in points, summed over the runs' own
 /// families and sizes.
-fn estimate_text_width_pt(runs: &[Run]) -> f64 {
+pub(super) fn estimate_text_width_pt(runs: &[Run]) -> f64 {
     runs.iter()
         .map(|run| {
             estimate_line_width_pt(
@@ -1077,6 +1077,23 @@ fn estimate_text_width_pt(runs: &[Run]) -> f64 {
         .sum()
 }
 
+/// Width of one character in the same model used for XLSX spill and print
+/// range decisions.
+pub(super) fn estimate_character_width_pt(
+    character: char,
+    family: Option<&str>,
+    font_size: f64,
+) -> f64 {
+    let digit_advance_em: f64 = family.map_or(CALIBRI_DIGIT_ADVANCE_EM, digit_advance_em);
+    match character {
+        ' '..='~' => {
+            ASCII_ADVANCE_RATIO[character as usize - ' ' as usize] * digit_advance_em * font_size
+        }
+        _ if character.is_ascii() => 0.0,
+        _ => 1.05 * font_size,
+    }
+}
+
 /// The single-run form of [`estimate_text_width_pt`], for callers that have a
 /// bare string, family and font size rather than IR runs.
 ///
@@ -1086,15 +1103,8 @@ fn estimate_text_width_pt(runs: &[Run]) -> f64 {
 /// on Excel's default Normal font, the same last resort [`column_unit_pt`]
 /// takes.
 pub(super) fn estimate_line_width_pt(text: &str, family: Option<&str>, font_size: f64) -> f64 {
-    let digit_advance_em: f64 = family.map_or(CALIBRI_DIGIT_ADVANCE_EM, digit_advance_em);
     text.chars()
-        .map(|c| match c {
-            ' '..='~' => {
-                ASCII_ADVANCE_RATIO[c as usize - ' ' as usize] * digit_advance_em * font_size
-            }
-            _ if c.is_ascii() => 0.0,
-            _ => 1.05 * font_size,
-        })
+        .map(|character| estimate_character_width_pt(character, family, font_size))
         .sum::<f64>()
 }
 

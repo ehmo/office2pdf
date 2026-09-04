@@ -1457,14 +1457,36 @@ fn with_chart_renders_embedded_chart() {
 /// `fitToPage` print scaling.
 const REPOSITORY_WORKBOOK_FIXTURE: &str = "office2pdf_repository_workbook.xlsx";
 
+fn repository_structure_pages() -> Vec<SheetPage> {
+    let data = load_fixture(REPOSITORY_WORKBOOK_FIXTURE);
+    let structure_fixture = repackage_xlsx_part(&data, "xl/worksheets/sheet2.xml", |xml| {
+        xml.replace("<mergeCell ref=\"A20:J20\"/>", "")
+    });
+    sheet_pages_of(&structure_fixture)
+}
+
 #[test]
 fn smoke_repository_workbook_fixture() {
     assert_produces_valid_pdf(REPOSITORY_WORKBOOK_FIXTURE);
 }
 
 #[test]
+fn repository_workbook_default_batch_refuses_wrapped_merge_before_rendering() {
+    let data = load_fixture(REPOSITORY_WORKBOOK_FIXTURE);
+    let expected = "merged cell across a horizontal page break";
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("batch parsing must refuse the wrapped merge");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == expected
+    ));
+}
+
+#[test]
 fn structure_repository_workbook_keeps_every_sheet_in_workbook_order() {
-    let pages = sheet_pages(REPOSITORY_WORKBOOK_FIXTURE);
+    let pages = repository_structure_pages();
 
     let mut names: Vec<&str> = Vec::new();
     for page in &pages {
@@ -1493,7 +1515,7 @@ fn structure_repository_workbook_keeps_every_sheet_in_workbook_order() {
 
 #[test]
 fn structure_repository_workbook_preserves_print_orientation_per_sheet() {
-    let pages = sheet_pages(REPOSITORY_WORKBOOK_FIXTURE);
+    let pages = repository_structure_pages();
 
     let is_landscape = |sheet: &str| -> bool {
         let page = sheet_page_named(&pages, sheet);
@@ -1512,7 +1534,7 @@ fn structure_repository_workbook_preserves_print_orientation_per_sheet() {
 
 #[test]
 fn structure_repository_workbook_extracts_every_dashboard_chart_with_data() {
-    let pages = sheet_pages(REPOSITORY_WORKBOOK_FIXTURE);
+    let pages = repository_structure_pages();
 
     let charts: Vec<&office2pdf::ir::Chart> = pages
         .iter()
@@ -1703,33 +1725,64 @@ fn smoke_merged_row_overflows_page_column() {
     assert_produces_valid_pdf("merged_row_overflows_page_column.xlsx");
 }
 
-/// A merged row spanning a sheet wide enough to split horizontally used to keep
-/// the whole merge's width as its spill width on every page-column, so its text
-/// painted a single line far past the printable edge — off the paper on this
-/// fixture, losing that ink entirely (#631).
+/// This public fixture's title merge crosses the horizontal page boundary.
+/// Every character that fits inside the merge must continue onto page two
+/// exactly once in batch, streaming, and the native PDF path. The source text
+/// beyond the merge's right edge remains intentionally clipped.
 #[test]
-fn structure_merged_row_overflow_clamps_spill_to_its_page_column() {
-    let pages = sheet_pages("merged_row_overflows_page_column.xlsx");
-    assert!(
-        pages.len() >= 2,
-        "the sheet is wider than one page and must split into column groups; got {}",
-        pages.len()
-    );
+fn merged_row_overflow_continues_before_every_native_render_path() {
+    let data = load_fixture("merged_row_overflows_page_column.xlsx");
+    let expected = "This merged full-width title is deliberately far wider than the first horizontal page-column so that it must either be clipped at the page break or conti";
+    let merged_fragments = |document: &office2pdf::ir::Document| -> Vec<String> {
+        document
+            .pages
+            .iter()
+            .filter_map(|page| match page {
+                Page::Sheet(sheet) => Some(sheet),
+                _ => None,
+            })
+            .flat_map(|sheet| sheet.table.rows.iter())
+            .flat_map(|row| row.cells.iter())
+            .filter(|cell| cell.col_span > 1)
+            .map(table_cell_text)
+            .filter(|text| !text.is_empty())
+            .collect()
+    };
 
-    for (index, page) in pages.iter().enumerate() {
-        let group_width: f64 = page.table.column_widths.iter().sum();
-        for row in &page.table.rows {
-            for cell in &row.cells {
-                let Some(spill) = cell.spill_width else {
-                    continue;
-                };
-                assert!(
-                    spill <= group_width + 0.001,
-                    "page {index}: spill width {spill}pt exceeds the {group_width}pt \
-                     the page-column actually carries",
-                );
-            }
-        }
+    let (batch, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("batch parsing must preserve the merge continuation");
+    let batch_fragments = merged_fragments(&batch);
+    assert_eq!(batch_fragments.concat(), expected);
+    let (streaming, _) = XlsxParser
+        .parse_streaming(&data, &ConvertOptions::default(), 1)
+        .expect("streaming parsing must preserve the merge continuation");
+    let streaming_text = streaming
+        .iter()
+        .flat_map(&merged_fragments)
+        .collect::<Vec<String>>()
+        .concat();
+    assert_eq!(
+        streaming_text, expected,
+        "streaming parsing must preserve each visible character exactly once"
+    );
+    let result = office2pdf::convert(fixture_path("merged_row_overflows_page_column.xlsx"))
+        .expect("native conversion must render the continued title");
+    common::validate_pdf_with_qpdf(&result.pdf);
+    let rendered: String = common::extract_pdf_text(&result.pdf)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    for fragment in batch_fragments {
+        let compact: String = fragment
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        assert_eq!(
+            rendered.matches(&compact).count(),
+            1,
+            "the selectable PDF text must preserve fragment {compact:?} exactly once; got {rendered:?}"
+        );
     }
 }
 
