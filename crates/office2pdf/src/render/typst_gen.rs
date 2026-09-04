@@ -1225,11 +1225,25 @@ fn write_placed_sheet_anchor(
             // The anchor sizes the chart, the way a slide's graphicFrame
             // extent does (issue #548); rendering at the intrinsic size
             // instead left the anchored band empty beneath it (issue #982).
-            let _ = write!(
-                out,
-                "#place(top + left, dx: {}pt)[",
-                format_f64(left_pt + placement.x_offset_pt),
-            );
+            let clipped: bool = if let Some(clip_width) = placement.clip_width_pt {
+                let clip_left: f64 = placement.clip_left_pt.unwrap_or(0.0);
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + clip_left),
+                    format_f64(clip_width),
+                    format_f64(placement.height * placement.print_scale),
+                    format_f64(placement.x_offset_pt - clip_left),
+                );
+                true
+            } else {
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + placement.x_offset_pt),
+                );
+                false
+            };
             // A fitted sheet prints its drawings shrunk whole, so the chart is
             // laid out at its full frame and the transform brings its text down
             // with its geometry (issue #1069). The corner it grows from is the
@@ -1258,13 +1272,35 @@ fn write_placed_sheet_anchor(
             if fitted {
                 out.push(']');
             }
-            out.push(']');
+            if clipped {
+                out.push_str("]]]");
+            } else {
+                out.push(']');
+            }
         }
         SheetAnchor::TextBox(text_box) => {
+            let clipped: bool = if let Some(clip_width) = text_box.clip_width_pt {
+                let clip_left: f64 = text_box.clip_left_pt.unwrap_or(0.0);
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + clip_left),
+                    format_f64(clip_width),
+                    format_f64(text_box.height),
+                    format_f64(text_box.x_offset_pt - clip_left),
+                );
+                true
+            } else {
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + text_box.x_offset_pt),
+                );
+                false
+            };
             let _ = write!(
                 out,
-                "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt",
-                format_f64(left_pt + text_box.x_offset_pt),
+                "#box(width: {}pt, height: {}pt",
                 format_f64(text_box.width),
                 format_f64(text_box.height),
             );
@@ -1290,6 +1326,9 @@ fn write_placed_sheet_anchor(
                 out.push(']');
             }
             out.push_str("]]");
+            if clipped {
+                out.push_str("]]");
+            }
         }
         SheetAnchor::Image(sheet_image) => {
             // A page-column window from drawing-width pagination: the image

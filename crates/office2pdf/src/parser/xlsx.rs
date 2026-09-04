@@ -575,6 +575,8 @@ fn anchored_text_box(
         fill: anchor.fill,
         border: anchor.border,
         vertical_center: anchor.vertical_center,
+        clip_left_pt: None,
+        clip_width_pt: None,
     }
 }
 
@@ -615,6 +617,8 @@ fn anchored_chart(
             width: placed.image.width.unwrap_or(100.0),
             height: placed.image.height.unwrap_or(50.0),
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: anchor.chart,
     }
@@ -655,6 +659,8 @@ fn chartsheet_page(
                     width: chart_box.width,
                     height: chart_box.height,
                     print_scale: 1.0,
+                    clip_left_pt: None,
+                    clip_width_pt: None,
                 }),
                 chart,
             }

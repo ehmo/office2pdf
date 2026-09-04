@@ -341,6 +341,8 @@ fn test_drawings_shift_with_the_inset_grid() {
         fill: None,
         border: None,
         vertical_center: false,
+        clip_left_pt: None,
+        clip_width_pt: None,
     });
     page.charts.push(crate::ir::SheetChart {
         anchor_row: 2,
@@ -350,6 +352,8 @@ fn test_drawings_shift_with_the_inset_grid() {
             width: 200.0,
             height: 100.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: crate::ir::Chart {
             chart_type: crate::ir::ChartType::Bar,

@@ -249,6 +249,13 @@ pub struct SheetChartPlacement {
     /// several chart layout paths switch model on whether a size was declared
     /// at all, so filling one in changes the chrome even at a scale of 1.
     pub print_scale: f64,
+    /// Left edge of the page-column clipping window, in points from the
+    /// page's content origin. `None` means zero.
+    pub clip_left_pt: Option<f64>,
+    /// Width of the page-column window this chart is clipped to. A paged copy
+    /// can carry a negative `x_offset_pt` so the next horizontal strip remains
+    /// in the same worksheet coordinate system.
+    pub clip_width_pt: Option<f64>,
 }
 
 /// A worksheet text box anchored to a sheet row.
@@ -271,6 +278,13 @@ pub struct SheetTextBox {
     pub border: Option<super::elements::BorderSide>,
     /// bodyPr anchor="ctr": center text vertically inside the box.
     pub vertical_center: bool,
+    /// Left edge of the page-column clipping window, in points from the
+    /// page's content origin. `None` means zero.
+    pub clip_left_pt: Option<f64>,
+    /// Width of the page-column window this text box is clipped to. A paged
+    /// copy can carry a negative `x_offset_pt` so text and shape ink continue
+    /// in place on later horizontal pages.
+    pub clip_width_pt: Option<f64>,
 }
 
 /// A worksheet drawing image anchored to a sheet row.

@@ -257,7 +257,7 @@ fn test_unmerged_spill_width_is_clamped_to_the_remaining_group_width() {
 }
 
 #[test]
-fn test_charts_stay_on_first_column_group() {
+fn chart_crossing_a_column_group_continues_on_the_next_page() {
     let mut page = make_page(
         vec![300.0, 300.0],
         vec![TableRow {
@@ -269,18 +269,149 @@ fn test_charts_stay_on_first_column_group() {
     page.charts = vec![crate::ir::SheetChart {
         anchor_row: 1,
         placement: Some(crate::ir::SheetChartPlacement {
-            x_offset_pt: 0.0,
+            x_offset_pt: 250.0,
             y_offset_pt: 0.0,
             width: 200.0,
             height: 100.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: bar_chart(),
     }];
     let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
     assert_eq!(pages.len(), 2);
     assert_eq!(pages[0].charts.len(), 1);
-    assert!(pages[1].charts.is_empty());
+    let first = pages[0].charts[0].placement.unwrap();
+    assert_eq!(first.x_offset_pt, 250.0);
+    assert_eq!(first.clip_width_pt, Some(300.0));
+    assert_eq!(pages[1].charts.len(), 1);
+    let second = pages[1].charts[0].placement.unwrap();
+    assert_eq!(second.x_offset_pt, -50.0);
+    assert_eq!(second.clip_width_pt, Some(400.0));
+}
+
+#[test]
+fn chart_extent_adds_page_columns_when_the_cell_grid_fits() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A")],
+            height: None,
+        }],
+    );
+    page.charts = vec![crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 0.0,
+            y_offset_pt: 0.0,
+            width: 1_050.0,
+            height: 100.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0].table.column_widths, vec![100.0]);
+    assert!(pages[1].table.column_widths.is_empty());
+    assert!(pages[2].table.column_widths.is_empty());
+    assert_eq!(pages[0].charts[0].placement.unwrap().x_offset_pt, 0.0);
+    assert_eq!(pages[1].charts[0].placement.unwrap().x_offset_pt, -400.0);
+    assert_eq!(pages[2].charts[0].placement.unwrap().x_offset_pt, -800.0);
+    assert!(
+        pages
+            .iter()
+            .all(|page| { page.charts[0].placement.unwrap().clip_width_pt == Some(400.0) })
+    );
+}
+
+#[test]
+fn text_box_extent_adds_page_columns_when_the_cell_grid_fits() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A")],
+            height: None,
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 0.0,
+        y_offset_pt: 0.0,
+        width: 1_050.0,
+        height: 100.0,
+        paragraphs: vec![Paragraph {
+            style: ParagraphStyle::default(),
+            runs: vec![Run {
+                text: "all text survives".to_string(),
+                style: TextStyle::default(),
+                href: None,
+                footnote: None,
+            }],
+        }],
+        fill: None,
+        border: None,
+        vertical_center: false,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0].text_boxes[0].x_offset_pt, 0.0);
+    assert_eq!(pages[1].text_boxes[0].x_offset_pt, -400.0);
+    assert_eq!(pages[2].text_boxes[0].x_offset_pt, -800.0);
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.text_boxes[0].clip_width_pt == Some(400.0))
+    );
+}
+
+#[test]
+fn drawing_extent_adds_pages_after_a_wide_cell_grid() {
+    let mut page = make_page(
+        vec![300.0, 300.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("LEFT"), cell("RIGHT")],
+            height: None,
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 600.0,
+        y_offset_pt: 0.0,
+        width: 900.0,
+        height: 100.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        border: None,
+        vertical_center: false,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert!(pages[0].text_boxes.is_empty());
+    assert_eq!(pages[1].text_boxes[0].x_offset_pt, 300.0);
+    assert_eq!(pages[2].text_boxes[0].x_offset_pt, -100.0);
+    assert_eq!(pages[3].text_boxes[0].x_offset_pt, -500.0);
+    assert!(
+        pages[1..]
+            .iter()
+            .all(|page| page.text_boxes[0].clip_width_pt == Some(400.0))
+    );
 }
 
 #[test]
@@ -303,7 +434,7 @@ fn image_crossing_a_column_group_continues_on_the_next_page() {
     assert_eq!(pages[0].images[0].clip_width_pt, Some(300.0));
     assert_eq!(pages[1].images.len(), 1);
     assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
-    assert_eq!(pages[1].images[0].clip_width_pt, Some(300.0));
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
 }
 
 #[test]
@@ -324,7 +455,7 @@ fn image_anchored_in_a_later_column_group_moves_to_that_page() {
     assert!(pages[0].images.is_empty());
     assert_eq!(pages[1].images.len(), 1);
     assert_eq!(pages[1].images[0].x_offset_pt, 50.0);
-    assert_eq!(pages[1].images[0].clip_width_pt, Some(300.0));
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
 }
 
 #[test]
@@ -359,7 +490,7 @@ fn image_extent_adds_page_columns_when_the_cell_grid_fits() {
 }
 
 #[test]
-fn continued_image_is_clipped_after_repeated_title_columns() {
+fn continued_drawings_are_clipped_after_repeated_title_columns() {
     let mut page = make_page(
         vec![100.0; 6],
         vec![TableRow {
@@ -376,6 +507,32 @@ fn continued_image_is_clipped_after_repeated_title_columns() {
         }],
     );
     page.images.push(sheet_image(350.0, 100.0));
+    page.charts.push(crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 350.0,
+            y_offset_pt: 0.0,
+            width: 100.0,
+            height: 100.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    });
+    page.text_boxes.push(crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 350.0,
+        y_offset_pt: 0.0,
+        width: 100.0,
+        height: 100.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        border: None,
+        vertical_center: false,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    });
 
     let pages = split_sheet_page_by_width(page, Some((0, 1)), SheetFit::default(), true);
 
@@ -384,7 +541,19 @@ fn continued_image_is_clipped_after_repeated_title_columns() {
     assert_eq!(pages[0].images[0].clip_width_pt, Some(400.0));
     assert_eq!(pages[1].images[0].x_offset_pt, 50.0);
     assert_eq!(pages[1].images[0].clip_left_pt, Some(100.0));
-    assert_eq!(pages[1].images[0].clip_width_pt, Some(200.0));
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(300.0));
+    let first_chart = pages[0].charts[0].placement.unwrap();
+    assert_eq!(first_chart.clip_left_pt, Some(0.0));
+    assert_eq!(first_chart.clip_width_pt, Some(400.0));
+    let second_chart = pages[1].charts[0].placement.unwrap();
+    assert_eq!(second_chart.x_offset_pt, 50.0);
+    assert_eq!(second_chart.clip_left_pt, Some(100.0));
+    assert_eq!(second_chart.clip_width_pt, Some(300.0));
+    assert_eq!(pages[0].text_boxes[0].clip_left_pt, Some(0.0));
+    assert_eq!(pages[0].text_boxes[0].clip_width_pt, Some(400.0));
+    assert_eq!(pages[1].text_boxes[0].x_offset_pt, 50.0);
+    assert_eq!(pages[1].text_boxes[0].clip_left_pt, Some(100.0));
+    assert_eq!(pages[1].text_boxes[0].clip_width_pt, Some(300.0));
 }
 
 #[test]
@@ -458,6 +627,8 @@ fn test_fit_to_width_scales_an_anchored_chart_with_the_grid() {
             width: 600.0,
             height: 200.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: bar_chart(),
     }];
@@ -499,6 +670,8 @@ fn test_fit_to_width_records_the_print_scale_on_an_anchored_chart() {
             width: 600.0,
             height: 200.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: bar_chart(),
     }];

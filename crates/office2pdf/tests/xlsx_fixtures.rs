@@ -1519,7 +1519,15 @@ fn structure_repository_workbook_extracts_every_dashboard_chart_with_data() {
         .flat_map(|page| page.charts.iter().map(|sheet_chart| &sheet_chart.chart))
         .collect();
 
-    assert_eq!(charts.len(), 3, "the dashboard anchors three charts");
+    let titles: std::collections::BTreeSet<&str> = charts
+        .iter()
+        .map(|chart| chart.title.as_deref().unwrap_or_default())
+        .collect();
+    assert_eq!(titles.len(), 3, "the dashboard anchors three charts");
+    assert!(
+        charts.len() >= titles.len(),
+        "a chart may be copied across page columns, but none may be lost"
+    );
 
     for chart in &charts {
         let title: &str = chart.title.as_deref().unwrap_or_default();

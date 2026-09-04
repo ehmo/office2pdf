@@ -2017,6 +2017,8 @@ fn make_sheet_text_box(anchor_row: u32, x_offset_pt: f64, height: f64) -> crate:
         fill: None,
         border: None,
         vertical_center: false,
+        clip_left_pt: None,
+        clip_width_pt: None,
     }
 }
 
@@ -2040,6 +2042,29 @@ fn sheet_page_with_text_boxes(text_boxes: Vec<crate::ir::SheetTextBox>) -> Page 
         images: Vec::new(),
         text_boxes,
     })
+}
+
+/// A text box that crosses a horizontal page break is drawn once per page.
+/// Each copy is clipped to that page's worksheet interval.
+#[test]
+fn test_continued_sheet_text_box_is_clipped_to_its_page_column() {
+    let mut text_box = make_sheet_text_box(3, -50.0, 60.0);
+    text_box.clip_left_pt = Some(0.0);
+    text_box.clip_width_pt = Some(400.0);
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    let margin: f64 = crate::defaults::DEFAULT_MARGIN_PT;
+    let wrapper: String = format!(
+        "#place(top + left, dx: {margin}pt)[#box(width: 400pt, height: 60pt, clip: true)[#place(top + left, dx: -50pt)[#box(width: 100pt, height: 60pt"
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the continued text box is shifted inside a page-width clipping box: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the clipped text box compiles");
 }
 
 #[test]

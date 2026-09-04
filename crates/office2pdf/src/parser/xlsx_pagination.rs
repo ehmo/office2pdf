@@ -8,7 +8,10 @@
 //! from the drawings' extents instead ([`split_drawing_only_page`],
 //! issue #713).
 
-use crate::ir::{Block, HFInline, HeaderFooter, SheetImage, SheetPage, Table, TableCell, TableRow};
+use crate::ir::{
+    Block, HFInline, HeaderFooter, SheetChart, SheetImage, SheetPage, SheetTextBox, Table,
+    TableCell, TableRow,
+};
 
 /// What one sheet's `<pageSetUpPr fitToPage="1"/>` asks pagination to scale it
 /// onto. Both directions are bounded separately and Excel obeys the tighter of
@@ -28,7 +31,7 @@ pub(super) struct SheetFit {
 }
 
 /// Split a sheet page into column groups that each fit the printable width.
-/// Returns the page unchanged only when the cell grid and every image extent
+/// Returns the page unchanged only when the cell grid and every drawing extent
 /// fit, or when the grid is one unsplittable column. `title_columns` is the
 /// 0-based inclusive-exclusive range of print-title columns (from
 /// `_xlnm.Print_Titles`) repeated at the left of every overflow page.
@@ -42,7 +45,7 @@ pub(super) fn split_sheet_page_by_width(
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
     let total_width: f64 = page.table.column_widths.iter().sum();
     if total_width <= printable_width {
-        return split_fitting_grid_by_image_extent(page, printable_width);
+        return split_fitting_grid_by_drawing_extent(page, printable_width);
     }
     if page.table.column_widths.len() <= 1 {
         return vec![page];
@@ -75,6 +78,9 @@ pub(super) fn split_sheet_page_by_width(
         title_columns.map(|(start, end)| slice_table_columns(&page.table, start, end));
 
     let mut result: Vec<SheetPage> = Vec::with_capacity(groups.len());
+    let mut last_window_left: f64 = 0.0;
+    let mut last_window_width: f64 = 0.0;
+    let mut last_output_left: f64 = 0.0;
     for (index, &(start, end)) in groups.iter().enumerate() {
         let mut table: Table = slice_table_columns(&page.table, start, end);
         let repeats_title_columns: bool = title_columns
@@ -87,12 +93,25 @@ pub(super) fn split_sheet_page_by_width(
             table = prepend_title_columns(title_table, table);
         }
         let window_left: f64 = page.table.column_widths[..start].iter().sum();
-        let window_width: f64 = page.table.column_widths[start..end].iter().sum();
+        let group_width: f64 = page.table.column_widths[start..end].iter().sum();
         let output_left: f64 = if repeats_title_columns {
             title_width
         } else {
             0.0
         };
+        // A page break before another populated column is a hard worksheet
+        // boundary. The final populated group has no such boundary, so a
+        // drawing can use the rest of the physical printable width before it
+        // continues onto drawing-only pages.
+        let printable_drawing_width: f64 = (printable_width - output_left).max(0.0);
+        let window_width: f64 = if index + 1 == groups.len() {
+            printable_drawing_width
+        } else {
+            group_width.min(printable_drawing_width)
+        };
+        last_window_left = window_left;
+        last_window_width = window_width;
+        last_output_left = output_left;
         result.push(SheetPage {
             name: page.name.clone(),
             size: page.size,
@@ -100,36 +119,75 @@ pub(super) fn split_sheet_page_by_width(
             table,
             header: page.header.clone(),
             footer: page.footer.clone(),
-            // Charts and text boxes remain on the first column group. Images
-            // are copied into every page-column window they intersect.
-            charts: if index == 0 {
-                page.charts.clone()
-            } else {
-                Vec::new()
-            },
+            charts: charts_for_column_group(&page.charts, window_left, window_width, output_left),
             images: images_for_column_group(&page.images, window_left, window_width, output_left),
-            text_boxes: if index == 0 {
-                page.text_boxes.clone()
-            } else {
-                Vec::new()
-            },
+            text_boxes: text_boxes_for_column_group(
+                &page.text_boxes,
+                window_left,
+                window_width,
+                output_left,
+            ),
         });
+    }
+
+    // The drawing layer can continue after the final populated column group.
+    // Those pages repeat print-title columns but contain no ordinary cells.
+    let right_extent: f64 = drawing_right_extent(&page);
+    let mut window_left: f64 = last_window_left + last_window_width;
+    let window_width: f64 = (printable_width - last_output_left).max(0.0);
+    let empty_table: Table = if let Some(title_table) = title_table {
+        title_table
+    } else {
+        slice_table_columns(
+            &page.table,
+            page.table.column_widths.len(),
+            page.table.column_widths.len(),
+        )
+    };
+    while window_width > 0.0 && right_extent > window_left {
+        result.push(SheetPage {
+            name: page.name.clone(),
+            size: page.size,
+            margins: page.margins,
+            table: empty_table.clone(),
+            header: page.header.clone(),
+            footer: page.footer.clone(),
+            charts: charts_for_column_group(
+                &page.charts,
+                window_left,
+                window_width,
+                last_output_left,
+            ),
+            images: images_for_column_group(
+                &page.images,
+                window_left,
+                window_width,
+                last_output_left,
+            ),
+            text_boxes: text_boxes_for_column_group(
+                &page.text_boxes,
+                window_left,
+                window_width,
+                last_output_left,
+            ),
+        });
+        window_left += window_width;
     }
     result
 }
 
-/// Add printable-width page-columns when the cell grid fits but a picture
+/// Add printable-width page-columns when the cell grid fits but a drawing
 /// extends beyond it.
 ///
 /// The first page keeps the complete grid. Later page-columns keep the same
 /// row geometry but no cells, because their only printable content is the
-/// continued picture. The fixed-width windows matter here: the populated
+/// continued drawing. The fixed-width windows matter here: the populated
 /// grid may stop at 100pt while the physical page boundary remains at 400pt.
-fn split_fitting_grid_by_image_extent(page: SheetPage, printable_width: f64) -> Vec<SheetPage> {
+fn split_fitting_grid_by_drawing_extent(page: SheetPage, printable_width: f64) -> Vec<SheetPage> {
     if printable_width <= 0.0 {
         return vec![page];
     }
-    let right_extent: f64 = image_right_extent(&page.images);
+    let right_extent: f64 = drawing_right_extent(&page);
     if right_extent <= printable_width {
         return vec![page];
     }
@@ -146,10 +204,11 @@ fn split_fitting_grid_by_image_extent(page: SheetPage, printable_width: f64) -> 
             let mut paged: SheetPage = page.clone();
             if group > 0 {
                 paged.table = empty_table.clone();
-                paged.charts = Vec::new();
-                paged.text_boxes = Vec::new();
             }
+            paged.charts = charts_for_column_group(&page.charts, window_left, printable_width, 0.0);
             paged.images = images_for_column_group(&page.images, window_left, printable_width, 0.0);
+            paged.text_boxes =
+                text_boxes_for_column_group(&page.text_boxes, window_left, printable_width, 0.0);
             paged
         })
         .collect()
@@ -434,11 +493,83 @@ fn images_for_column_group(
         .collect()
 }
 
+/// Copy each placed chart to every page-column window its printed frame
+/// intersects. A chart with no drawing anchor remains flow content on the
+/// first page only.
+fn charts_for_column_group(
+    charts: &[SheetChart],
+    window_left: f64,
+    window_width: f64,
+    output_left: f64,
+) -> Vec<SheetChart> {
+    let window_right: f64 = window_left + window_width;
+    charts
+        .iter()
+        .filter(|chart| match chart.placement {
+            Some(placement) => {
+                let width: f64 = placement.width * placement.print_scale;
+                placement.x_offset_pt + width > window_left && placement.x_offset_pt < window_right
+            }
+            None => window_left == 0.0,
+        })
+        .map(|chart| {
+            let mut paged_chart: SheetChart = chart.clone();
+            if let Some(placement) = paged_chart.placement.as_mut() {
+                placement.x_offset_pt = output_left + placement.x_offset_pt - window_left;
+                placement.clip_left_pt = Some(output_left);
+                placement.clip_width_pt = Some(window_width);
+            }
+            paged_chart
+        })
+        .collect()
+}
+
+/// Copy each text box to every page-column window its frame intersects.
+fn text_boxes_for_column_group(
+    text_boxes: &[SheetTextBox],
+    window_left: f64,
+    window_width: f64,
+    output_left: f64,
+) -> Vec<SheetTextBox> {
+    let window_right: f64 = window_left + window_width;
+    text_boxes
+        .iter()
+        .filter(|text_box| {
+            text_box.x_offset_pt + text_box.width > window_left
+                && text_box.x_offset_pt < window_right
+        })
+        .map(|text_box| {
+            let mut paged_text_box: SheetTextBox = text_box.clone();
+            paged_text_box.x_offset_pt = output_left + text_box.x_offset_pt - window_left;
+            paged_text_box.clip_left_pt = Some(output_left);
+            paged_text_box.clip_width_pt = Some(window_width);
+            paged_text_box
+        })
+        .collect()
+}
+
 fn image_right_extent(images: &[SheetImage]) -> f64 {
     images
         .iter()
         .map(|image| image.x_offset_pt + image.image.width.unwrap_or(0.0))
         .fold(0.0, f64::max)
+}
+
+fn drawing_right_extent(page: &SheetPage) -> f64 {
+    let chart_extent: f64 = page
+        .charts
+        .iter()
+        .filter_map(|chart| chart.placement)
+        .map(|placement| placement.x_offset_pt + placement.width * placement.print_scale)
+        .fold(0.0, f64::max);
+    let text_box_extent: f64 = page
+        .text_boxes
+        .iter()
+        .map(|text_box| text_box.x_offset_pt + text_box.width)
+        .fold(0.0, f64::max);
+    image_right_extent(&page.images)
+        .max(chart_extent)
+        .max(text_box_extent)
 }
 
 /// Build a table containing only columns `[start, end)`, truncating cell
@@ -550,16 +681,14 @@ fn slice_table_columns(table: &Table, start: usize, end: usize) -> Table {
 /// [`split_sheet_page_by_width`] has no column widths to split on; the
 /// drawings' extents drive the paging instead.
 ///
-/// Every image on a split page carries [`crate::ir::SheetImage::clip_width_pt`]
-/// so the renderer clips it to its page-column window; a continued copy also
-/// carries a negative `x_offset_pt`. Charts and text boxes stay on the first
-/// page-column, like the column splitter keeps them on its first group.
+/// Every placed drawing on a split page carries its page-column clip window;
+/// a continued copy also carries a negative `x_offset_pt`.
 pub(super) fn split_drawing_only_page(page: SheetPage) -> Vec<SheetPage> {
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
     if printable_width <= 0.0 {
         return vec![page];
     }
-    let right_extent: f64 = image_right_extent(&page.images);
+    let right_extent: f64 = drawing_right_extent(&page);
     if right_extent <= printable_width {
         return vec![page];
     }
@@ -569,26 +698,10 @@ pub(super) fn split_drawing_only_page(page: SheetPage) -> Vec<SheetPage> {
         .map(|group| {
             let window_left: f64 = group as f64 * printable_width;
             let mut paged: SheetPage = page.clone();
-            paged.images = page
-                .images
-                .iter()
-                .filter(|image| {
-                    let width: f64 = image.image.width.unwrap_or(0.0);
-                    image.x_offset_pt + width > window_left
-                        && image.x_offset_pt < window_left + printable_width
-                })
-                .map(|image| {
-                    let mut paged_image = image.clone();
-                    paged_image.x_offset_pt -= window_left;
-                    paged_image.clip_left_pt = Some(0.0);
-                    paged_image.clip_width_pt = Some(printable_width);
-                    paged_image
-                })
-                .collect();
-            if group > 0 {
-                paged.charts = Vec::new();
-                paged.text_boxes = Vec::new();
-            }
+            paged.charts = charts_for_column_group(&page.charts, window_left, printable_width, 0.0);
+            paged.images = images_for_column_group(&page.images, window_left, printable_width, 0.0);
+            paged.text_boxes =
+                text_boxes_for_column_group(&page.text_boxes, window_left, printable_width, 0.0);
             paged
         })
         .collect()
