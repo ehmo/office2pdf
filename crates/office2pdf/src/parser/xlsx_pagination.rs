@@ -10,12 +10,6 @@
 
 use crate::ir::{Block, HFInline, HeaderFooter, SheetPage, Table, TableCell, TableRow};
 
-/// Upper bound on overflow pages per sheet chunk. Pathological sheets (used
-/// ranges thousands of columns wide) would otherwise explode into thousands
-/// of pages and blow the Typst compiler's stack; columns beyond the cap stay
-/// on the last page (clipped, the pre-pagination behavior).
-const MAX_COLUMN_GROUPS: usize = 12;
-
 /// What one sheet's `<pageSetUpPr fitToPage="1"/>` asks pagination to scale it
 /// onto. Both directions are bounded separately and Excel obeys the tighter of
 /// the two.
@@ -65,7 +59,7 @@ pub(super) fn split_sheet_page_by_width(
     let first_group_packing_width: f64 = printable_width.max(widest_column);
     let overflow_packing_width: f64 = (printable_width - title_width).max(widest_column);
 
-    let mut groups: Vec<(usize, usize)> = column_groups(
+    let groups: Vec<(usize, usize)> = column_groups(
         &page.table.column_widths,
         first_group_packing_width,
         overflow_packing_width,
@@ -73,14 +67,6 @@ pub(super) fn split_sheet_page_by_width(
     if groups.len() <= 1 {
         return vec![page];
     }
-    if groups.len() > MAX_COLUMN_GROUPS {
-        let column_count = page.table.column_widths.len();
-        groups.truncate(MAX_COLUMN_GROUPS);
-        if let Some(last) = groups.last_mut() {
-            last.1 = column_count;
-        }
-    }
-
     let title_table: Option<Table> =
         title_columns.map(|(start, end)| slice_table_columns(&page.table, start, end));
 
@@ -497,8 +483,7 @@ pub(super) fn split_drawing_only_page(page: SheetPage) -> Vec<SheetPage> {
     if right_extent <= printable_width {
         return vec![page];
     }
-    let group_count: usize =
-        ((right_extent / printable_width).ceil() as usize).clamp(2, MAX_COLUMN_GROUPS);
+    let group_count: usize = ((right_extent / printable_width).ceil() as usize).max(2);
 
     (0..group_count)
         .map(|group| {

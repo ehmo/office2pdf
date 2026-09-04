@@ -284,9 +284,10 @@ fn test_charts_stay_on_first_column_group() {
 }
 
 #[test]
-fn test_pathologically_wide_sheet_is_capped() {
-    // 100 columns x 150pt with 400pt printable would be 50 pages; the cap
-    // keeps the tail on the last page instead of exploding the compiler.
+fn test_wide_sheet_preserves_every_printable_column_group() {
+    // 100 columns x 150pt with 400pt printable is 50 page-columns. Folding the
+    // tail into an oversized final page keeps the cells in the IR but clips
+    // them from the PDF, which is silent content loss.
     let cells: Vec<TableCell> = (0..100).map(|i| cell(&format!("c{i}"))).collect();
     let page = make_page(
         vec![150.0; 100],
@@ -297,9 +298,20 @@ fn test_pathologically_wide_sheet_is_capped() {
         }],
     );
     let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
-    assert_eq!(pages.len(), 12);
+    assert_eq!(pages.len(), 50);
+    assert!(
+        pages
+            .iter()
+            .all(|page| { page.table.column_widths.iter().sum::<f64>() <= 400.0 })
+    );
     let total_columns: usize = pages.iter().map(|p| p.table.column_widths.len()).sum();
     assert_eq!(total_columns, 100);
+    let visible_cells: Vec<String> = pages
+        .iter()
+        .flat_map(|page| page.table.rows[0].cells.iter().map(cell_text))
+        .collect();
+    let expected_cells: Vec<String> = (0..100).map(|index| format!("c{index}")).collect();
+    assert_eq!(visible_cells, expected_cells);
 }
 
 /// Excel's `fitToWidth` squeezes the sheet onto that many pages instead of

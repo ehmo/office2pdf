@@ -9,6 +9,23 @@ use crate::error::{ConvertError, ConvertMetrics, ConvertResult, ConvertWarning};
 use crate::parser::Parser;
 use crate::{ir, parser, render};
 
+/// Largest standard-renderer document proved to compile without overflowing
+/// Typst's stack in the tested native and browser builds. Native XLSX streaming
+/// compiles planned sheet-page chunks separately and bypasses this guard.
+/// Browser builds need a bounded chunk-and-merge path to exceed it.
+const STANDARD_RENDER_PAGE_LIMIT: usize = 1_600;
+
+pub(super) fn ensure_standard_page_count(page_count: usize) -> Result<(), ConvertError> {
+    if page_count > STANDARD_RENDER_PAGE_LIMIT {
+        return Err(ConvertError::ResourceLimit {
+            resource: "document pages",
+            limit: STANDARD_RENDER_PAGE_LIMIT,
+            actual: page_count,
+        });
+    }
+    Ok(())
+}
+
 fn format_label(format: Format) -> &'static str {
     match format {
         Format::Docx => "DOCX",
@@ -233,6 +250,7 @@ pub(super) fn convert_bytes(
         }
     };
     let parse_duration = parse_start.elapsed();
+    ensure_standard_page_count(doc.pages.len())?;
     extend_document_fonts(&mut additional_fonts, &doc);
 
     #[cfg(target_arch = "wasm32")]
@@ -847,6 +865,7 @@ fn convert_bytes_streaming_xlsx(
 }
 
 pub(super) fn render_document(doc: &ir::Document) -> Result<Vec<u8>, ConvertError> {
+    ensure_standard_page_count(doc.pages.len())?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let options = ConvertOptions::default();

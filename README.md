@@ -107,6 +107,7 @@ office2pdf *.docx --outdir pdfs/
 # With options
 office2pdf slides.pptx --paper a4 --landscape
 office2pdf spreadsheet.xlsx --sheets "Sheet1,Summary"
+office2pdf large-spreadsheet.xlsx --streaming --streaming-chunk-size 500
 office2pdf document.docx --pdf-a
 office2pdf report.docx --font-path /usr/share/fonts/custom
 ```
@@ -191,6 +192,14 @@ is used. An explicit `setLastResortFontFamily` call takes precedence.
 Native Rust callers can use the same per-conversion path through
 `ConvertOptions::font_bytes` and `ConvertOptions::last_resort_font_family`.
 
+## Resource Limits
+
+Standard conversion stops before rendering and returns `ConvertError::ResourceLimit`
+when parsing produces more than 1,600 pages. WASM bindings throw the same message
+as a JavaScript error string. Native XLSX callers can use page-aligned row streaming
+through the CLI or `ConvertOptions` when the library enables `pdf-ops`. That path
+is not subject to the standard-renderer guard; callers must still bound their inputs.
+
 ## CLI Options
 
 | Flag | Description |
@@ -203,6 +212,8 @@ Native Rust callers can use the same per-conversion path through
 | `--sheets <NAMES>` | XLSX sheet filter (comma-separated); the only way to print a hidden sheet |
 | `--slides <RANGE>` | PPTX slide range (e.g. `1-5` or `3`) |
 | `--font-path <DIR>` | Additional font directory override (repeatable) |
+| `--streaming` | Compile large XLSX files in page-aligned row chunks |
+| `--streaming-chunk-size <ROWS>` | Target XLSX streaming chunk size (default: 1,000 rows) |
 
 ## Supported Formats
 
