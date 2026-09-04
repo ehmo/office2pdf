@@ -200,6 +200,14 @@ as a JavaScript error string. Native XLSX callers can use page-aligned row strea
 through the CLI or `ConvertOptions` when the library enables `pdf-ops`. That path
 is not subject to the standard-renderer guard; callers must still bound their inputs.
 
+Rust batch and streaming XLSX conversions return `ConvertError::UnsupportedElement`
+before rendering when a drawing crosses a vertical page boundary controlled by
+auto-height rows, a multi-page cell grid (including repeated print-title rows), or
+manual row breaks. WASM bindings throw the same message as a JavaScript error string.
+Natural vertical drawing continuation is supported for fixed-height grids that fit one
+printable page and for drawing-only sheets. `fitToHeight` scaling is checked before
+this refusal.
+
 ## CLI Options
 
 | Flag | Description |

@@ -1492,7 +1492,7 @@ fn a_drawing_only_picture_continues_through_vertical_page_windows() {
 }
 
 #[test]
-fn a_drawing_over_a_multi_page_grid_keeps_the_existing_flow_path() {
+fn the_low_level_splitter_keeps_a_multi_page_grid_on_its_flow_path() {
     let rows = (0..40)
         .map(|_| TableRow {
             minimum_height: None,
@@ -1510,6 +1510,173 @@ fn a_drawing_over_a_multi_page_grid_keeps_the_existing_flow_path() {
 
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].table.rows.len(), 40);
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_over_a_multi_page_grid() {
+    let rows = (0..40)
+        .map(|_| TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        })
+        .collect();
+    let mut page = make_page(vec![100.0], rows);
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow over a multi-page cell grid"
+    ));
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_when_streaming_has_later_rows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("first chunk")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, true)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow over a multi-page cell grid"
+    ));
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_with_auto_height_rows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("auto")],
+            height: None,
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow with auto-height rows"
+    ));
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_with_manual_row_breaks() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, true, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow with manual row breaks"
+    ));
+}
+
+#[test]
+fn preflight_refuses_a_drawing_that_crosses_an_early_manual_row_break() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(200.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 150.0;
+    picture.image.height = Some(100.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, true, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow with manual row breaks"
+    ));
+}
+
+#[test]
+fn preflight_accepts_the_proved_vertical_drawing_class() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, false).unwrap();
+}
+
+#[test]
+fn preflight_accepts_fit_to_height_after_drawing_scaling() {
+    let rows = (0..40)
+        .map(|_| TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        })
+        .collect();
+    let mut page = make_page(vec![100.0], rows);
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    ensure_supported_vertical_drawing_flow(&page, fit_to_height(1, 800.0), true, false, false)
+        .unwrap();
 }
 
 #[test]

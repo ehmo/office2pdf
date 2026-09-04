@@ -701,9 +701,13 @@ pub struct XlsxParser;
 impl XlsxParser {
     /// Parse XLSX in streaming mode, returning one `Document` per chunk of rows.
     ///
-    /// Each chunk contains a single `SheetPage` with at most `chunk_size` rows.
-    /// This allows the caller to compile each chunk independently, bounding peak
-    /// memory during Typst compilation.
+    /// Each returned `Document` starts with at most `chunk_size` data rows from
+    /// one sheet. Repeated print-title rows may be prepended, and pagination may
+    /// expand that input into multiple `SheetPage`s. The caller can compile each
+    /// document independently to bound peak memory during Typst compilation.
+    ///
+    /// Returns [`ConvertError::UnsupportedElement`] before rendering when an
+    /// anchored drawing crosses vertical row flow that streaming cannot preserve.
     pub fn parse_streaming(
         &self,
         data: &[u8],
@@ -903,6 +907,7 @@ impl XlsxParser {
             );
             let header_footer_scales_with_doc: bool =
                 sheet_header_footer_scales_with_doc(&sheet_name, &fitting_sheets);
+            let row_breaks = collect_row_breaks(sheet);
 
             // Process rows in chunks
             let mut chunk_start = row_start;
@@ -993,6 +998,13 @@ impl XlsxParser {
                         normal_font.as_ref(),
                     );
                 }
+                xlsx_pagination::ensure_supported_vertical_drawing_flow(
+                    &sheet_page,
+                    fit,
+                    header_footer_scales_with_doc,
+                    !row_breaks.is_empty(),
+                    chunk_end < row_end,
+                )?;
                 let doc = Document {
                     metadata: metadata.clone(),
                     pages: xlsx_pagination::split_sheet_page_by_width(
@@ -1286,6 +1298,13 @@ impl Parser for XlsxParser {
                         normal_font.as_ref(),
                     );
                 }
+                xlsx_pagination::ensure_supported_vertical_drawing_flow(
+                    &sheet_page,
+                    fit,
+                    header_footer_scales_with_doc,
+                    false,
+                    false,
+                )?;
                 pages.extend(
                     xlsx_pagination::split_sheet_page_by_width(
                         sheet_page,
@@ -1415,6 +1434,13 @@ impl Parser for XlsxParser {
                             normal_font.as_ref(),
                         );
                     }
+                    xlsx_pagination::ensure_supported_vertical_drawing_flow(
+                        &sheet_page,
+                        fit,
+                        header_footer_scales_with_doc,
+                        true,
+                        false,
+                    )?;
                     pages.extend(
                         xlsx_pagination::split_sheet_page_by_width(
                             sheet_page,

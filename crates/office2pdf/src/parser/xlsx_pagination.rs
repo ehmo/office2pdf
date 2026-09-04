@@ -4,13 +4,15 @@
 //! drawings that cross the printable width continue in page-column windows; a
 //! single oversized column remains unsplit. Drawings that cross the printable
 //! height continue in page-row windows when the cell grid has fixed row heights
-//! and fits one printable page. Auto-height or multi-page grids stay on Typst's
-//! flow path until their row-break interaction is measured.
+//! and fits one printable page. Parser preflight refuses drawing overflow over
+//! auto-height, multi-page, or manual-break row flow until those interactions
+//! are measured.
 //!
 //! A drawing-only sheet has no rows or columns to split on, so both axes come
 //! from the drawings' extents instead ([`split_drawing_only_page`], issue
 //! #713).
 
+use crate::error::ConvertError;
 use crate::ir::{
     Block, HFInline, HeaderFooter, SheetChart, SheetImage, SheetPage, SheetTextBox, Table,
     TableCell, TableRow,
@@ -33,11 +35,56 @@ pub(super) struct SheetFit {
     pub(super) sheet_height_pt: f64,
 }
 
+/// Refuse vertical drawing overflow when its interaction with row pagination
+/// is not proved. Fit-to-page scaling is applied before this check so a drawing
+/// that the declared bounds bring onto one page remains supported unless it
+/// still crosses a manual row break.
+pub(super) fn ensure_supported_vertical_drawing_flow(
+    page: &SheetPage,
+    fit: SheetFit,
+    header_footer_scales_with_doc: bool,
+    has_manual_row_breaks: bool,
+    has_rows_outside_page: bool,
+) -> Result<(), ConvertError> {
+    if page.charts.is_empty() && page.images.is_empty() && page.text_boxes.is_empty() {
+        return Ok(());
+    }
+    let fitted = fit_page_to_pages(page.clone(), fit, header_footer_scales_with_doc);
+    let printable_height: f64 = fitted.size.height - fitted.margins.top - fitted.margins.bottom;
+    let table_height: Option<f64> = fitted
+        .table
+        .rows
+        .iter()
+        .map(|row| row.height)
+        .try_fold(0.0, |sum, height| height.map(|height| sum + height));
+    let drawing_bottom: f64 = drawing_bottom_extent(&fitted);
+    let crosses_manual_break: bool = has_manual_row_breaks
+        && table_height.is_none_or(|table_height| drawing_bottom > table_height);
+    if printable_height <= 0.0 || (drawing_bottom <= printable_height && !crosses_manual_break) {
+        return Ok(());
+    }
+    let element = if crosses_manual_break {
+        "vertical drawing overflow with manual row breaks"
+    } else if table_height.is_none() {
+        "vertical drawing overflow with auto-height rows"
+    } else if has_rows_outside_page || table_height.is_some_and(|height| height > printable_height)
+    {
+        "vertical drawing overflow over a multi-page cell grid"
+    } else {
+        return Ok(());
+    };
+    Err(ConvertError::UnsupportedElement {
+        format: "XLSX",
+        element: element.to_string(),
+    })
+}
+
 /// Fit a sheet, split splittable columns into printable-width groups, then
 /// expand each group into printable-height drawing windows when every row has
 /// a fixed height and the grid fits one page. A single oversized column remains
-/// unsplit. Auto-height or multi-page grids keep Typst's existing vertical
-/// flow. `title_columns` is the 0-based
+/// unsplit. The low-level splitter leaves auto-height or multi-page grids on
+/// Typst's vertical flow, but parser preflight refuses drawing overflow before
+/// this function receives those cases. `title_columns` is the 0-based
 /// inclusive-exclusive range of print-title columns (from
 /// `_xlnm.Print_Titles`) repeated at the left of every horizontal overflow
 /// page.
@@ -193,9 +240,9 @@ fn split_sheet_page_by_width_only(
 }
 
 /// Continue drawings through printable-height windows when the cell grid fits
-/// one page and every row has a fixed height. A multi-page grid or any
-/// auto-height or unknown row height still follows Typst's flow pagination
-/// until its row breaks and repeated-title interaction have a measured rule.
+/// one page and every row has a fixed height. The low-level fallback leaves a
+/// multi-page grid or unknown row height on Typst's flow pagination; parser
+/// preflight refuses drawing overflow over those unproved row interactions.
 fn split_page_by_drawing_height(page: SheetPage) -> Vec<SheetPage> {
     let printable_height: f64 = page.size.height - page.margins.top - page.margins.bottom;
     if printable_height <= 0.0 {

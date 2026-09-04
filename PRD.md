@@ -100,7 +100,7 @@ It operates standalone without external runtimes (LibreOffice, Chromium, Docker)
 | **Memory** | < 500MB for 100-page documents |
 | **Binary size** | CLI < 50MB (including fonts) |
 | **Platforms** | Windows, macOS, Linux |
-| **Error handling** | Skip unparseable elements with warnings, continue overall conversion |
+| **Error handling** | Skip unparseable elements with warnings when output fidelity is proved; fail before rendering when it is not proved |
 | **Font fallback** | System font discovery + built-in default fonts |
 
 ### 4.1 Performance Measurement Policy
@@ -321,7 +321,7 @@ office2pdf --help
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| OOXML spec complexity | Parsing crates may not support all elements | Skip unsupported elements + warning logs |
-| Typst IR conversion limits | Some layouts may not be expressible in Typst | Best approximation within Typst capabilities |
+| OOXML spec complexity | Parsing crates may not support all elements | Skip unsupported elements with warnings when output fidelity is proved; otherwise return a named pre-render error |
+| Typst IR conversion limits | Some layouts may not be expressible in Typst | Approximate only when output fidelity is proved; otherwise return a named pre-render error |
 | Font compatibility | Original fonts may not be available | System font discovery + fallback font mapping |
 | Parsing crate maintenance | Dependency crates may become abandoned | Prepare forks, consider self-implementation for core parsers |

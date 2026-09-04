@@ -92,6 +92,7 @@ fn should_resolve_font_context(doc: &ir::Document, options: &ConvertOptions) -> 
 ///
 /// Returns [`ConvertError::UnsupportedFormat`] if the extension is unrecognized,
 /// [`ConvertError::Io`] if the file cannot be read,
+/// [`ConvertError::UnsupportedElement`] if a document construct is not proved,
 /// [`ConvertError::ResourceLimit`] if the parsed document exceeds the standard
 /// renderer's page limit, or other variants for parse/render failures.
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,8 +109,8 @@ pub fn convert(path: impl AsRef<std::path::Path>) -> Result<ConvertResult, Conve
 ///
 /// # Errors
 ///
-/// Returns [`ConvertError`] on unsupported format, I/O, parse, render, or
-/// standard-renderer resource-limit failure.
+/// Returns [`ConvertError`] on unsupported format or element, I/O, parse,
+/// render, or standard-renderer resource-limit failure.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn convert_with_options(
     path: impl AsRef<std::path::Path>,
@@ -129,8 +130,8 @@ pub fn convert_with_options(
 ///
 /// # Errors
 ///
-/// Returns [`ConvertError`] on parse, render, or standard-renderer
-/// resource-limit failure.
+/// Returns [`ConvertError`] on an unsupported element, parse, render, or
+/// standard-renderer resource-limit failure.
 pub fn convert_bytes(
     data: &[u8],
     format: Format,

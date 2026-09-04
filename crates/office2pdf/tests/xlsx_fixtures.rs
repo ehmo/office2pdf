@@ -10,6 +10,7 @@ mod common;
 use std::path::PathBuf;
 
 use office2pdf::config::ConvertOptions;
+use office2pdf::error::ConvertError;
 use office2pdf::internal::Parser;
 use office2pdf::internal::XlsxParser;
 use office2pdf::internal::generate_typst;
@@ -2413,6 +2414,197 @@ fn sheet_pages_of(data: &[u8]) -> Vec<SheetPage> {
             _ => None,
         })
         .collect()
+}
+
+fn move_first_two_cell_anchor_to_row(xml: &str, row: u32) -> String {
+    let anchor_start = xml
+        .find("<xdr:to>")
+        .expect("the public picture fixture should use a two-cell anchor");
+    let row_tag = "<xdr:row>";
+    let row_start = anchor_start
+        + xml[anchor_start..]
+            .find(row_tag)
+            .expect("the anchor endpoint should name a row")
+        + row_tag.len();
+    let row_end = row_start
+        + xml[row_start..]
+            .find("</xdr:row>")
+            .expect("the anchor endpoint row should close");
+    format!("{}{}{}", &xml[..row_start], row, &xml[row_end..])
+}
+
+fn make_default_cell_style_wrap(xml: &str) -> String {
+    let cell_xfs = xml
+        .find("<cellXfs")
+        .expect("the public picture fixture should define cell formats");
+    let xf_start = cell_xfs
+        + xml[cell_xfs..]
+            .find("<xf ")
+            .expect("cell formats should contain a default format");
+    let xf_end = xf_start
+        + xml[xf_start..]
+            .find("/>")
+            .expect("the default cell format should be self-closing");
+    let default_xf = &xml[xf_start..xf_end];
+    assert!(
+        !default_xf.contains("applyAlignment"),
+        "the public fixture's default format should not declare alignment"
+    );
+    format!(
+        "{}{} applyAlignment=\"1\"><alignment wrapText=\"1\"/></xf>{}",
+        &xml[..xf_start],
+        default_xf,
+        &xml[xf_end + 2..]
+    )
+}
+
+fn assert_vertical_drawing_refusal(data: &[u8], expected: &str) {
+    let error = XlsxParser
+        .parse(data, &ConvertOptions::default())
+        .expect_err("unproved vertical drawing flow must refuse before rendering");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == expected
+    ));
+}
+
+fn assert_streaming_vertical_drawing_refusal(data: &[u8], expected: &str) {
+    let error = XlsxParser
+        .parse_streaming(data, &ConvertOptions::default(), 1)
+        .expect_err("streaming must apply the same vertical drawing refusal as batch parsing");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == expected
+    ));
+}
+
+/// Apache POI's public `picture.xlsx` supplies the package, drawing, and image.
+/// Extending that anchor and populated grid must reach the parser-level refusal
+/// rather than falling through to Typst's unproved row flow.
+#[test]
+fn public_picture_refuses_vertical_overflow_over_a_multi_page_grid() {
+    let data = repackage_xlsx_part(
+        &load_fixture("picture.xlsx"),
+        "xl/drawings/drawing1.xml",
+        |xml| move_first_two_cell_anchor_to_row(xml, 100),
+    );
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet1.xml", |xml| {
+        let rows = (200..=240)
+            .map(|row| {
+                format!(
+                    "<row r=\"{row}\" ht=\"20\" customHeight=\"1\"><c r=\"A{row}\" t=\"inlineStr\"><is><t>guard {row}</t></is></c></row>"
+                )
+            })
+            .collect::<String>();
+        xml.replace("</sheetData>", &format!("{rows}</sheetData>"))
+    });
+
+    assert_vertical_drawing_refusal(
+        &data,
+        "vertical drawing overflow over a multi-page cell grid",
+    );
+}
+
+/// Batch and streaming conversion must enforce the same refusal. A one-row
+/// chunk makes the later public-derived rows explicit.
+#[test]
+fn public_picture_streaming_refuses_vertical_overflow_over_later_rows() {
+    let data = repackage_xlsx_part(
+        &load_fixture("picture.xlsx"),
+        "xl/drawings/drawing1.xml",
+        |xml| move_first_two_cell_anchor_to_row(xml, 100),
+    );
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet1.xml", |xml| {
+        let rows = (200..=202)
+            .map(|row| {
+                format!(
+                    "<row r=\"{row}\" ht=\"20\" customHeight=\"1\"><c r=\"A{row}\" t=\"inlineStr\"><is><t>guard {row}</t></is></c></row>"
+                )
+            })
+            .collect::<String>();
+        xml.replace("</sheetData>", &format!("{rows}</sheetData>"))
+    });
+
+    assert_streaming_vertical_drawing_refusal(
+        &data,
+        "vertical drawing overflow over a multi-page cell grid",
+    );
+}
+
+/// Repeated title rows change later-page row placement. The public picture
+/// fixture must still refuse before rendering when its extended drawing
+/// crosses that unproved page flow.
+#[test]
+fn public_picture_refuses_vertical_overflow_with_repeated_title_rows() {
+    let data = repackage_xlsx_part(
+        &load_fixture("picture.xlsx"),
+        "xl/drawings/drawing1.xml",
+        |xml| move_first_two_cell_anchor_to_row(xml, 100),
+    );
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet1.xml", |xml| {
+        let rows = (200..=240)
+            .map(|row| {
+                format!(
+                    "<row r=\"{row}\" ht=\"20\" customHeight=\"1\"><c r=\"A{row}\" t=\"inlineStr\"><is><t>guard {row}</t></is></c></row>"
+                )
+            })
+            .collect::<String>();
+        xml.replace("</sheetData>", &format!("{rows}</sheetData>"))
+    });
+    let data = repackage_xlsx_part(&data, "xl/workbook.xml", |xml| {
+        xml.replace(
+            "<definedNames />",
+            "<definedNames><definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">Sheet1!$1:$1</definedName></definedNames>",
+        )
+    });
+
+    assert_vertical_drawing_refusal(
+        &data,
+        "vertical drawing overflow over a multi-page cell grid",
+    );
+}
+
+/// A long wrapped cell makes its row content-driven. The vertical drawing
+/// window cannot be placed until that auto height is known, so the parser must
+/// refuse the public-derived workbook.
+#[test]
+fn public_picture_refuses_vertical_overflow_with_auto_height_rows() {
+    let data = repackage_xlsx_part(
+        &load_fixture("picture.xlsx"),
+        "xl/drawings/drawing1.xml",
+        |xml| move_first_two_cell_anchor_to_row(xml, 100),
+    );
+    let data = repackage_xlsx_part(&data, "xl/styles.xml", make_default_cell_style_wrap);
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet1.xml", |xml| {
+        let long_text = "wrapped ".repeat(80);
+        let row = format!(
+            "<row r=\"200\"><c r=\"A200\" s=\"0\" t=\"inlineStr\"><is><t>{long_text}</t></is></c></row>"
+        );
+        xml.replace("</sheetData>", &format!("{row}</sheetData>"))
+    });
+
+    assert_vertical_drawing_refusal(&data, "vertical drawing overflow with auto-height rows");
+}
+
+/// The same public picture becomes unsupported when a manual row break owns
+/// the page split its extended drawing crosses.
+#[test]
+fn public_picture_refuses_vertical_overflow_with_manual_row_breaks() {
+    let data = repackage_xlsx_part(
+        &load_fixture("picture.xlsx"),
+        "xl/drawings/drawing1.xml",
+        |xml| move_first_two_cell_anchor_to_row(xml, 100),
+    );
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet1.xml", |xml| {
+        xml.replace(
+            "<drawing ",
+            "<rowBreaks count=\"1\" manualBreakCount=\"1\"><brk id=\"1\" min=\"0\" max=\"16383\" man=\"1\"/></rowBreaks><drawing ",
+        )
+    });
+
+    assert_vertical_drawing_refusal(&data, "vertical drawing overflow with manual row breaks");
 }
 
 /// A `/drawing` relationship attaches nothing on its own: the sheet body's
