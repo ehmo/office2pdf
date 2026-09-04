@@ -313,6 +313,7 @@ fn test_drawings_shift_with_the_inset_grid() {
         anchor_row: 1,
         x_offset_pt: 10.0,
         y_offset_pt: 5.0,
+        clip_left_pt: None,
         clip_width_pt: None,
         image: crate::ir::ImageData {
             rotation_deg: None,

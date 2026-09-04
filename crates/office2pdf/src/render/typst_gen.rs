@@ -1302,13 +1302,14 @@ fn write_placed_sheet_anchor(
                 .zip(sheet_image.image.height)
                 .filter(|_| sheet_image.image.width.is_some());
             if let Some((clip_width, image_height)) = clip {
+                let clip_left: f64 = sheet_image.clip_left_pt.unwrap_or(0.0);
                 let _ = write!(
                     out,
                     "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
-                    format_f64(left_pt),
+                    format_f64(left_pt + clip_left),
                     format_f64(clip_width),
                     format_f64(image_height),
-                    format_f64(sheet_image.x_offset_pt),
+                    format_f64(sheet_image.x_offset_pt - clip_left),
                 );
                 generate_image(out, &sheet_image.image, ctx);
                 out.push_str("]]]");

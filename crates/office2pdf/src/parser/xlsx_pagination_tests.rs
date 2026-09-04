@@ -284,6 +284,110 @@ fn test_charts_stay_on_first_column_group() {
 }
 
 #[test]
+fn image_crossing_a_column_group_continues_on_the_next_page() {
+    let mut page = make_page(
+        vec![300.0, 300.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), cell("B")],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(250.0, 200.0));
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].images.len(), 1);
+    assert_eq!(pages[0].images[0].x_offset_pt, 250.0);
+    assert_eq!(pages[0].images[0].clip_width_pt, Some(300.0));
+    assert_eq!(pages[1].images.len(), 1);
+    assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(300.0));
+}
+
+#[test]
+fn image_anchored_in_a_later_column_group_moves_to_that_page() {
+    let mut page = make_page(
+        vec![300.0, 300.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), cell("B")],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(350.0, 50.0));
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert!(pages[0].images.is_empty());
+    assert_eq!(pages[1].images.len(), 1);
+    assert_eq!(pages[1].images[0].x_offset_pt, 50.0);
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(300.0));
+}
+
+#[test]
+fn image_extent_adds_page_columns_when_the_cell_grid_fits() {
+    // The populated grid occupies only 100pt, but printable page boundaries
+    // still divide a drawing that reaches 1,050pt across the sheet. Returning
+    // early because the cells fit loses both continuation strips.
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A")],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(350.0, 700.0));
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0].table.column_widths, vec![100.0]);
+    assert!(pages[1].table.column_widths.is_empty());
+    assert!(pages[2].table.column_widths.is_empty());
+    assert_eq!(pages[0].images[0].x_offset_pt, 350.0);
+    assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[2].images[0].x_offset_pt, -450.0);
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.images[0].clip_width_pt == Some(400.0))
+    );
+}
+
+#[test]
+fn continued_image_is_clipped_after_repeated_title_columns() {
+    let mut page = make_page(
+        vec![100.0; 6],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![
+                cell("A"),
+                cell("B"),
+                cell("C"),
+                cell("D"),
+                cell("E"),
+                cell("F"),
+            ],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(350.0, 100.0));
+
+    let pages = split_sheet_page_by_width(page, Some((0, 1)), SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].images[0].clip_left_pt, Some(0.0));
+    assert_eq!(pages[0].images[0].clip_width_pt, Some(400.0));
+    assert_eq!(pages[1].images[0].x_offset_pt, 50.0);
+    assert_eq!(pages[1].images[0].clip_left_pt, Some(100.0));
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(200.0));
+}
+
+#[test]
 fn test_wide_sheet_preserves_every_printable_column_group() {
     // 100 columns x 150pt with 400pt printable is 50 page-columns. Folding the
     // tail into an oversized final page keeps the cells in the IR but clips
@@ -880,6 +984,7 @@ fn sheet_image(x: f64, width: f64) -> crate::ir::SheetImage {
             flip_h: false,
             flip_v: false,
         },
+        clip_left_pt: None,
         clip_width_pt: None,
     }
 }
@@ -900,12 +1005,14 @@ fn a_drawing_past_the_printable_edge_adds_a_page_column() {
     assert_eq!(pages[0].images.len(), 2);
     assert_eq!(pages[0].images[0].x_offset_pt, 10.0);
     assert_eq!(pages[0].images[1].x_offset_pt, 350.0);
+    assert_eq!(pages[0].images[1].clip_left_pt, Some(0.0));
     assert_eq!(pages[0].images[1].clip_width_pt, Some(400.0));
 
     // The crossing image continues on the second page-column, shifted left
     // by one printable width and clipped to the same window.
     assert_eq!(pages[1].images.len(), 1);
     assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[1].images[0].clip_left_pt, Some(0.0));
     assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
 }
 

@@ -8,7 +8,7 @@
 //! from the drawings' extents instead ([`split_drawing_only_page`],
 //! issue #713).
 
-use crate::ir::{Block, HFInline, HeaderFooter, SheetPage, Table, TableCell, TableRow};
+use crate::ir::{Block, HFInline, HeaderFooter, SheetImage, SheetPage, Table, TableCell, TableRow};
 
 /// What one sheet's `<pageSetUpPr fitToPage="1"/>` asks pagination to scale it
 /// onto. Both directions are bounded separately and Excel obeys the tighter of
@@ -28,7 +28,8 @@ pub(super) struct SheetFit {
 }
 
 /// Split a sheet page into column groups that each fit the printable width.
-/// Returns the page unchanged when everything fits. `title_columns` is the
+/// Returns the page unchanged only when the cell grid and every image extent
+/// fit, or when the grid is one unsplittable column. `title_columns` is the
 /// 0-based inclusive-exclusive range of print-title columns (from
 /// `_xlnm.Print_Titles`) repeated at the left of every overflow page.
 pub(super) fn split_sheet_page_by_width(
@@ -40,7 +41,10 @@ pub(super) fn split_sheet_page_by_width(
     let page: SheetPage = fit_page_to_pages(page, fit, header_footer_scales_with_doc);
     let printable_width: f64 = page.size.width - page.margins.left - page.margins.right;
     let total_width: f64 = page.table.column_widths.iter().sum();
-    if total_width <= printable_width || page.table.column_widths.len() <= 1 {
+    if total_width <= printable_width {
+        return split_fitting_grid_by_image_extent(page, printable_width);
+    }
+    if page.table.column_widths.len() <= 1 {
         return vec![page];
     }
 
@@ -73,12 +77,22 @@ pub(super) fn split_sheet_page_by_width(
     let mut result: Vec<SheetPage> = Vec::with_capacity(groups.len());
     for (index, &(start, end)) in groups.iter().enumerate() {
         let mut table: Table = slice_table_columns(&page.table, start, end);
+        let repeats_title_columns: bool = title_columns
+            .map(|(title_start, _)| start > title_start)
+            .unwrap_or(false);
         // Excel repeats title columns on pages that no longer show them.
         if let (Some(title_table), Some((title_start, _))) = (title_table.as_ref(), title_columns)
             && start > title_start
         {
             table = prepend_title_columns(title_table, table);
         }
+        let window_left: f64 = page.table.column_widths[..start].iter().sum();
+        let window_width: f64 = page.table.column_widths[start..end].iter().sum();
+        let output_left: f64 = if repeats_title_columns {
+            title_width
+        } else {
+            0.0
+        };
         result.push(SheetPage {
             name: page.name.clone(),
             size: page.size,
@@ -86,17 +100,14 @@ pub(super) fn split_sheet_page_by_width(
             table,
             header: page.header.clone(),
             footer: page.footer.clone(),
-            // Charts and images anchor to rows of the first column group only.
+            // Charts and text boxes remain on the first column group. Images
+            // are copied into every page-column window they intersect.
             charts: if index == 0 {
                 page.charts.clone()
             } else {
                 Vec::new()
             },
-            images: if index == 0 {
-                page.images.clone()
-            } else {
-                Vec::new()
-            },
+            images: images_for_column_group(&page.images, window_left, window_width, output_left),
             text_boxes: if index == 0 {
                 page.text_boxes.clone()
             } else {
@@ -105,6 +116,43 @@ pub(super) fn split_sheet_page_by_width(
         });
     }
     result
+}
+
+/// Add printable-width page-columns when the cell grid fits but a picture
+/// extends beyond it.
+///
+/// The first page keeps the complete grid. Later page-columns keep the same
+/// row geometry but no cells, because their only printable content is the
+/// continued picture. The fixed-width windows matter here: the populated
+/// grid may stop at 100pt while the physical page boundary remains at 400pt.
+fn split_fitting_grid_by_image_extent(page: SheetPage, printable_width: f64) -> Vec<SheetPage> {
+    if printable_width <= 0.0 {
+        return vec![page];
+    }
+    let right_extent: f64 = image_right_extent(&page.images);
+    if right_extent <= printable_width {
+        return vec![page];
+    }
+    let group_count: usize = ((right_extent / printable_width).ceil() as usize).max(2);
+    let empty_table: Table = slice_table_columns(
+        &page.table,
+        page.table.column_widths.len(),
+        page.table.column_widths.len(),
+    );
+
+    (0..group_count)
+        .map(|group| {
+            let window_left: f64 = group as f64 * printable_width;
+            let mut paged: SheetPage = page.clone();
+            if group > 0 {
+                paged.table = empty_table.clone();
+                paged.charts = Vec::new();
+                paged.text_boxes = Vec::new();
+            }
+            paged.images = images_for_column_group(&page.images, window_left, printable_width, 0.0);
+            paged
+        })
+        .collect()
 }
 
 /// Concatenate the repeated title columns before a column group's table.
@@ -357,6 +405,42 @@ fn column_groups(
     groups
 }
 
+/// Copy each image to every page-column window it intersects. Coordinates on
+/// the copy are relative to that page's table, after any repeated print-title
+/// columns, and the renderer clips the image to the window instead of drawing
+/// the overlapping portion twice.
+fn images_for_column_group(
+    images: &[SheetImage],
+    window_left: f64,
+    window_width: f64,
+    output_left: f64,
+) -> Vec<SheetImage> {
+    let window_right: f64 = window_left + window_width;
+    images
+        .iter()
+        .filter(|image| match image.image.width {
+            Some(width) if width > 0.0 => {
+                image.x_offset_pt + width > window_left && image.x_offset_pt < window_right
+            }
+            _ => image.x_offset_pt >= window_left && image.x_offset_pt < window_right,
+        })
+        .map(|image| {
+            let mut paged_image: SheetImage = image.clone();
+            paged_image.x_offset_pt = output_left + image.x_offset_pt - window_left;
+            paged_image.clip_left_pt = Some(output_left);
+            paged_image.clip_width_pt = Some(window_width);
+            paged_image
+        })
+        .collect()
+}
+
+fn image_right_extent(images: &[SheetImage]) -> f64 {
+    images
+        .iter()
+        .map(|image| image.x_offset_pt + image.image.width.unwrap_or(0.0))
+        .fold(0.0, f64::max)
+}
+
 /// Build a table containing only columns `[start, end)`, truncating cell
 /// spans at the group boundary. A merged cell that starts before the group
 /// keeps its geometry (background/border) but blanks its content.
@@ -475,11 +559,7 @@ pub(super) fn split_drawing_only_page(page: SheetPage) -> Vec<SheetPage> {
     if printable_width <= 0.0 {
         return vec![page];
     }
-    let right_extent: f64 = page
-        .images
-        .iter()
-        .map(|image| image.x_offset_pt + image.image.width.unwrap_or(0.0))
-        .fold(0.0, f64::max);
+    let right_extent: f64 = image_right_extent(&page.images);
     if right_extent <= printable_width {
         return vec![page];
     }
@@ -500,6 +580,7 @@ pub(super) fn split_drawing_only_page(page: SheetPage) -> Vec<SheetPage> {
                 .map(|image| {
                     let mut paged_image = image.clone();
                     paged_image.x_offset_pt -= window_left;
+                    paged_image.clip_left_pt = Some(0.0);
                     paged_image.clip_width_pt = Some(printable_width);
                     paged_image
                 })

@@ -465,6 +465,7 @@ fn anchored_image(
         x_offset_pt,
         y_offset_pt,
         image,
+        clip_left_pt: None,
         clip_width_pt: None,
     }
 }

@@ -3703,6 +3703,7 @@ fn sheet_with_a_picture_over_a_filled_panel() -> Page {
             anchor_row: 1,
             x_offset_pt: 20.0,
             y_offset_pt: 10.0,
+            clip_left_pt: None,
             clip_width_pt: None,
             image: ImageData {
                 data: PIXEL_PNG.to_vec(),

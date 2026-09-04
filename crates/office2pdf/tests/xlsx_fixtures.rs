@@ -1149,6 +1149,25 @@ fn with_drawing_renders_anchored_images() {
     );
 }
 
+/// Apache POI's public `picture.xlsx` has a small populated grid and one JPEG
+/// anchored from column C through U. Adobe and BentoPDF both print three A4
+/// page-columns. Returning early when the cells fit produced one page and
+/// clipped away the two continuation strips.
+#[test]
+fn picture_extent_creates_three_page_columns() {
+    let pages = sheet_pages("picture.xlsx");
+
+    assert_eq!(pages.len(), 3);
+    assert!(
+        pages.iter().all(|page| page.images.len() == 1),
+        "each page-column must carry its clipped image segment"
+    );
+    assert!(pages.iter().all(|page| {
+        page.images[0].clip_left_pt == Some(0.0)
+            && page.images[0].clip_width_pt.unwrap_or(0.0) > 0.0
+    }));
+}
+
 /// Excel writes `a:blip` as a start element with children whenever the picture
 /// carries an alpha or recolour effect. The fixture is an Excel for Mac export
 /// whose only picture is spelled that way — `<a:blip r:embed="rId1">

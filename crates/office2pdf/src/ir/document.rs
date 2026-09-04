@@ -286,8 +286,12 @@ pub struct SheetImage {
     /// coordinates rather than placing them between rows (issue #474).
     pub y_offset_pt: f64,
     pub image: super::elements::ImageData,
+    /// Left edge of the page-column clipping window, in points from the
+    /// page's content origin. Repeated print-title columns occupy the space
+    /// before this edge. `None` means zero.
+    pub clip_left_pt: Option<f64>,
     /// Width of the page-column window this image is clipped to, from the
-    /// page's content left edge. Set by drawing-width pagination: Excel clips
+    /// clipping window's left edge. Set by drawing-width pagination: Excel clips
     /// a drawing at the printable edge and continues it on the next
     /// page-column, so a paged copy may also carry a negative `x_offset_pt`
     /// (issue #713). `None` draws the image unclipped — and so does `Some`
