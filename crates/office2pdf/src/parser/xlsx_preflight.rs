@@ -120,6 +120,7 @@ fn validate_package_bounds(data: &[u8], bounds: PackageBounds) -> Result<(), Con
 
 pub(super) fn ensure_safe_package_bounds(data: &[u8]) -> Result<(), ConvertError> {
     validate_package_bounds(data, BROWSER_PACKAGE_BOUNDS)?;
+    validate_xml_parts(data)?;
     validate_upstream_parser_inputs(data)
 }
 
@@ -204,6 +205,71 @@ fn decoded_xml_bytes(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ConvertError> {
     }
 
     Ok(Cow::Owned(xml.into_bytes()))
+}
+
+fn validate_xml_parts(data: &[u8]) -> Result<(), ConvertError> {
+    let mut archive = crate::parser::open_zip(data)?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to inspect XLSX XML part: {error}"))
+        })?;
+        let name = entry.name().trim_start_matches('/').to_string();
+        let lower = name.to_ascii_lowercase();
+        if entry.is_dir()
+            || !(lower.ends_with(".xml") || lower.ends_with(".rels") || lower.ends_with(".vml"))
+        {
+            continue;
+        }
+
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to read XLSX XML part {name}: {error}"))
+        })?;
+        validate_xml_part(&name, decoded_xml_bytes(&bytes)?.as_ref())?;
+    }
+    Ok(())
+}
+
+fn validate_xml_part(name: &str, xml: &[u8]) -> Result<(), ConvertError> {
+    let parse_error = |detail: &dyn std::fmt::Display| {
+        crate::parser::parse_err(format!("Failed to parse XLSX XML part {name}: {detail}"))
+    };
+    let mut reader = Reader::from_reader(xml);
+    loop {
+        match reader.read_event().map_err(|error| parse_error(&error))? {
+            Event::Start(element) | Event::Empty(element) => {
+                for attribute in element.attributes() {
+                    let attribute = attribute.map_err(|error| parse_error(&error))?;
+                    attribute
+                        .decode_and_unescape_value(reader.decoder())
+                        .map_err(|error| parse_error(&error))?;
+                }
+            }
+            Event::Text(text) => {
+                text.xml_content().map_err(|error| parse_error(&error))?;
+            }
+            Event::CData(text) => {
+                text.xml_content().map_err(|error| parse_error(&error))?;
+            }
+            Event::GeneralRef(reference) => {
+                let value: &[u8] = &reference;
+                match value {
+                    b"amp" | b"apos" | b"gt" | b"lt" | b"quot" => {}
+                    _ if reference.is_char_ref() => {
+                        reference
+                            .resolve_char_ref()
+                            .map_err(|error| parse_error(&error))?;
+                    }
+                    _ => return Err(parse_error(&"undefined entity reference")),
+                }
+            }
+            Event::DocType(_) => {
+                return Err(unsupported("XLSX XML document type declaration"));
+            }
+            Event::Eof => return Ok(()),
+            _ => {}
+        }
+    }
 }
 
 fn is_ascii_whitespace(text: &BytesText<'_>) -> bool {
@@ -1999,6 +2065,38 @@ mod tests {
             };
             assert_unsupported(error, expected);
         }
+    }
+
+    #[test]
+    fn upstream_parser_safety_refuses_undefined_xml_entities() {
+        for (part, xml) in [
+            (
+                "xl/sharedStrings.xml",
+                r#"<sst><si><t>value &a5;</t></si></sst>"#,
+            ),
+            (
+                "docProps/core.xml",
+                r#"<cp:coreProperties xmlns:cp="urn:cp"><dc:title xmlns:dc="urn:dc">value &lol9;</dc:title></cp:coreProperties>"#,
+            ),
+        ] {
+            let package = zip_entries(&[(part, xml.as_bytes())]);
+            let error = ensure_safe_package_bounds(&package)
+                .expect_err("undefined XML entities must refuse before the upstream parser");
+            assert!(
+                matches!(error, ConvertError::Parse(ref detail) if detail.contains("entity")),
+                "expected an XML entity parse error for {part}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn xml_validation_keeps_predefined_and_numeric_references() {
+        let package = zip_entries(&[(
+            "xl/sharedStrings.xml",
+            br#"<sst><si><t>&amp;&apos;&gt;&lt;&quot;&#65;&#x42;</t></si></sst>"#,
+        )]);
+
+        ensure_safe_package_bounds(&package).expect("standard XML references must remain accepted");
     }
 
     #[test]
