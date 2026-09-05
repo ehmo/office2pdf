@@ -22,11 +22,21 @@ const MAX_XLSX_COLUMNS: u32 = 16384;
 /// Keep this narrow compatibility layer until a released dependency carries
 /// the complete behavior (issue #1262).
 fn formatted_cell_value(cell: &umya_spreadsheet::Cell) -> String {
-    if cell.get_value_number().is_some_and(|value| value == 0.0)
+    if let Some(value) = cell.get_value_number()
         && let Some(number_format) = cell.get_style().get_number_format()
-        && let Some(literal) = literal_zero_section_text(number_format.get_format_code())
     {
-        return literal;
+        if value == 0.0
+            && let Some(literal) = literal_zero_section_text(number_format.get_format_code())
+        {
+            return literal;
+        }
+        if (!(0.0..2_958_466.0).contains(&value) || !value.is_finite())
+            && umya_spreadsheet::helper::number_format::DATE_TIME_REGEX
+                .is_match(number_format.get_format_code())
+                .unwrap_or(false)
+        {
+            return cell.get_value().into_owned();
+        }
     }
     cell.get_formatted_value()
 }
@@ -622,7 +632,9 @@ pub(super) fn parse_column_letters(s: &str) -> Option<u32> {
         if !c.is_ascii_uppercase() {
             return None;
         }
-        col = col * 26 + (c as u32 - b'A' as u32 + 1);
+        col = col
+            .checked_mul(26)?
+            .checked_add(c as u32 - b'A' as u32 + 1)?;
     }
     Some(col)
 }
@@ -1065,7 +1077,7 @@ const ASCII_ADVANCE_RATIO: [f64; 95] = [
 
 /// Single-line text width estimate in points, summed over the runs' own
 /// families and sizes.
-fn estimate_text_width_pt(runs: &[Run]) -> f64 {
+pub(super) fn estimate_text_width_pt(runs: &[Run]) -> f64 {
     runs.iter()
         .map(|run| {
             estimate_line_width_pt(
@@ -1077,6 +1089,23 @@ fn estimate_text_width_pt(runs: &[Run]) -> f64 {
         .sum()
 }
 
+/// Width of one character in the same model used for XLSX spill and print
+/// range decisions.
+pub(super) fn estimate_character_width_pt(
+    character: char,
+    family: Option<&str>,
+    font_size: f64,
+) -> f64 {
+    let digit_advance_em: f64 = family.map_or(CALIBRI_DIGIT_ADVANCE_EM, digit_advance_em);
+    match character {
+        ' '..='~' => {
+            ASCII_ADVANCE_RATIO[character as usize - ' ' as usize] * digit_advance_em * font_size
+        }
+        _ if character.is_ascii() => 0.0,
+        _ => 1.05 * font_size,
+    }
+}
+
 /// The single-run form of [`estimate_text_width_pt`], for callers that have a
 /// bare string, family and font size rather than IR runs.
 ///
@@ -1086,15 +1115,8 @@ fn estimate_text_width_pt(runs: &[Run]) -> f64 {
 /// on Excel's default Normal font, the same last resort [`column_unit_pt`]
 /// takes.
 pub(super) fn estimate_line_width_pt(text: &str, family: Option<&str>, font_size: f64) -> f64 {
-    let digit_advance_em: f64 = family.map_or(CALIBRI_DIGIT_ADVANCE_EM, digit_advance_em);
     text.chars()
-        .map(|c| match c {
-            ' '..='~' => {
-                ASCII_ADVANCE_RATIO[c as usize - ' ' as usize] * digit_advance_em * font_size
-            }
-            _ if c.is_ascii() => 0.0,
-            _ => 1.05 * font_size,
-        })
+        .map(|character| estimate_character_width_pt(character, family, font_size))
         .sum::<f64>()
 }
 
@@ -2360,11 +2382,26 @@ pub(super) fn build_rows_for_range(
                 if ovr.background.is_some() {
                     background = ovr.background;
                 }
+                if ovr.font_family.is_some() {
+                    text_style.font_family.clone_from(&ovr.font_family);
+                }
+                if ovr.font_size.is_some() {
+                    text_style.font_size = ovr.font_size;
+                }
                 if ovr.font_color.is_some() {
                     text_style.color = ovr.font_color;
                 }
                 if let Some(bold) = ovr.bold {
                     text_style.bold = Some(bold);
+                }
+                if let Some(italic) = ovr.italic {
+                    text_style.italic = Some(italic);
+                }
+                if let Some(underline) = ovr.underline {
+                    text_style.underline = Some(underline);
+                }
+                if let Some(strikethrough) = ovr.strikethrough {
+                    text_style.strikethrough = Some(strikethrough);
                 }
                 data_bar = ovr.data_bar.clone();
                 icon_text = ovr.icon_text.clone();

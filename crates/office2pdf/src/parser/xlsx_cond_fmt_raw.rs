@@ -204,7 +204,8 @@ pub(crate) fn extract_cond_fmt_hints(data: &[u8]) -> SheetCondFmtHints {
     result
 }
 
-/// The workbook's `<definedName>` formulas, keyed by upper-case name.
+/// The workbook's unambiguous global `<definedName>` formulas, keyed by
+/// upper-case name.
 ///
 /// A conditional-format expression names them rather than repeating their
 /// formulas, and the whole Gantt bar area of #841 is written that way
@@ -212,20 +213,14 @@ pub(crate) fn extract_cond_fmt_hints(data: &[u8]) -> SheetCondFmtHints {
 /// loses one whose definition is an expression rather than a range, so the
 /// text is read from `xl/workbook.xml` directly.
 ///
-/// Sheet-scoped names (`localSheetId`) collapse into the same map: a workbook
-/// that scopes two names alike to different sheets would resolve one of them
-/// wrongly, which no template in the corpus does and which a range-aware
-/// resolver would have to distinguish.
-pub(crate) fn extract_defined_names(data: &[u8]) -> HashMap<String, String> {
+/// Sheet-scoped names are left out. The evaluator has no sheet-scoped lookup,
+/// so accepting one would let it shadow a global name with the wrong formula.
+/// Built-in `_xlnm` print names are also irrelevant to conditional formats.
+fn parse_defined_names(xml: &str) -> HashMap<String, String> {
     let mut names: HashMap<String, String> = HashMap::new();
-    let Ok(mut archive) = crate::parser::open_zip(data) else {
-        return names;
-    };
-    let Some(workbook_xml) = read_zip_text(&mut archive, "xl/workbook.xml") else {
-        return names;
-    };
+    let mut ambiguous = std::collections::HashSet::new();
 
-    let mut reader = Reader::from_str(&workbook_xml);
+    let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     loop {
         match reader.read_event() {
@@ -233,6 +228,8 @@ pub(crate) fn extract_defined_names(data: &[u8]) -> HashMap<String, String> {
                 let Some(name) = attr_value(&reader, &element, b"name") else {
                     continue;
                 };
+                let key = name.to_ascii_uppercase();
+                let is_local = attr_value(&reader, &element, b"localSheetId").is_some();
                 // `read_text` gathers the element's whole content, entity
                 // references included. Taking a single `Event::Text` truncated
                 // every definition at its first `&gt;` — which is most of them
@@ -241,7 +238,15 @@ pub(crate) fn extract_defined_names(data: &[u8]) -> HashMap<String, String> {
                 if let Ok(raw) = reader.read_text(quick_xml::name::QName(tag.as_ref()))
                     && let Ok(definition) = quick_xml::escape::unescape(&raw)
                 {
-                    names.insert(name.to_ascii_uppercase(), definition.into_owned());
+                    if name.to_ascii_lowercase().starts_with("_xlnm.") {
+                        continue;
+                    }
+                    if is_local || ambiguous.contains(&key) || names.contains_key(&key) {
+                        names.remove(&key);
+                        ambiguous.insert(key);
+                    } else {
+                        names.insert(key, definition.into_owned());
+                    }
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -249,6 +254,16 @@ pub(crate) fn extract_defined_names(data: &[u8]) -> HashMap<String, String> {
         }
     }
     names
+}
+
+pub(crate) fn extract_defined_names(data: &[u8]) -> HashMap<String, String> {
+    let Ok(mut archive) = crate::parser::open_zip(data) else {
+        return HashMap::new();
+    };
+    let Some(workbook_xml) = read_zip_text(&mut archive, "xl/workbook.xml") else {
+        return HashMap::new();
+    };
+    parse_defined_names(&workbook_xml)
 }
 
 #[cfg(test)]
@@ -327,6 +342,15 @@ mod tests {
                 .map(|hint| hint.icon_cfvos.is_empty())
                 .unwrap_or(true),
             "dataBar cfvos must not populate icon_cfvos"
+        );
+    }
+
+    #[test]
+    fn defined_names_keep_only_unambiguous_global_expression_names() {
+        let xml = r#"<workbook><definedNames><definedName name="Safe">A1&gt;0</definedName><definedName name="Shadowed">A1</definedName><definedName name="Shadowed" localSheetId="0">B1</definedName><definedName name="LocalOnly" localSheetId="1">C1</definedName><definedName name="Duplicate">D1</definedName><definedName name="Duplicate">E1</definedName><definedName name="_xlnm.Print_Area" localSheetId="0">A1:E9</definedName></definedNames></workbook>"#;
+        assert_eq!(
+            parse_defined_names(xml),
+            HashMap::from([("SAFE".to_string(), "A1>0".to_string())])
         );
     }
 }

@@ -2017,6 +2017,9 @@ fn make_sheet_text_box(anchor_row: u32, x_offset_pt: f64, height: f64) -> crate:
         fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
     }
 }
 
@@ -2040,6 +2043,79 @@ fn sheet_page_with_text_boxes(text_boxes: Vec<crate::ir::SheetTextBox>) -> Page 
         images: Vec::new(),
         text_boxes,
     })
+}
+
+/// A text box that crosses a horizontal page break is drawn once per page.
+/// Each copy is clipped to that page's worksheet interval.
+#[test]
+fn test_continued_sheet_text_box_is_clipped_to_its_page_column() {
+    let mut text_box = make_sheet_text_box(3, -50.0, 60.0);
+    text_box.clip_left_pt = Some(0.0);
+    text_box.clip_width_pt = Some(400.0);
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    let margin: f64 = crate::defaults::DEFAULT_MARGIN_PT;
+    let wrapper: String = format!(
+        "#place(top + left, dx: {margin}pt)[#box(width: 400pt, height: 60pt, clip: true)[#place(top + left, dx: -50pt)[#box(width: 100pt, height: 60pt"
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the continued text box is shifted inside a page-width clipping box: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the clipped text box compiles");
+}
+
+/// A drawing continued from the worksheet interval above this page is shifted
+/// upward inside the printable-height window. The window keeps the preceding
+/// slice out of the top margin and the following slice out of the bottom one.
+#[test]
+fn test_continued_sheet_text_box_is_clipped_to_its_page_row() {
+    let mut text_box = make_sheet_text_box(1, 40.0, 800.0);
+    text_box.y_offset_pt = -50.0;
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    let size = PageSize::default();
+    let margins = Margins::default();
+    let wrapper: String = format!(
+        "#place(top + left, dy: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dy: -50pt)[",
+        format_f64(margins.top),
+        format_f64(size.width),
+        format_f64(size.height - margins.top - margins.bottom),
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the continued text box is shifted inside a page-height clipping box: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the vertically clipped text box compiles");
+}
+
+/// Fit-to-page scales a worksheet text box as one drawing, including its
+/// text, inset, fill and border. Resizing only the frame leaves the contents
+/// at their declared size.
+#[test]
+fn test_fitted_sheet_text_box_is_scaled_as_a_complete_shape() {
+    let mut text_box = make_sheet_text_box(3, 40.0, 60.0);
+    text_box.print_scale = 0.5;
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    let dx_pt: f64 = crate::defaults::DEFAULT_MARGIN_PT + 40.0;
+    let wrapper: String = format!(
+        "#place(top + left, dx: {dx_pt}pt)[#scale(x: 50%, y: 50%, origin: top + left)[#box(width: 100pt, height: 60pt"
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the complete text box is scaled from its anchor: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the fitted text box compiles");
 }
 
 #[test]
@@ -2081,9 +2157,15 @@ fn test_sheet_drawings_overlay_the_grid_at_absolute_offsets() {
         !source.contains("#box(width: 100%, height: 0pt)"),
         "the marker must not be inline content: {source}"
     );
-    // Row 3's top edge is two 20pt rows down.
+    // Row 3's top edge is two 20pt rows down inside the printable-height
+    // window. The window itself begins at the top margin.
     assert_eq!(
-        source.matches(&format!("dy: {}pt", margin + 40.0)).count(),
+        source.matches(&format!("dy: {}pt", margin)).count(),
+        3,
+        "each drawing uses the same printable-height window: {source}"
+    );
+    assert_eq!(
+        source.matches("dy: 40pt").count(),
         3,
         "same-row drawings share one vertical origin: {source}"
     );

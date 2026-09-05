@@ -91,8 +91,10 @@ fn should_resolve_font_context(doc: &ir::Document, options: &ConvertOptions) -> 
 /// # Errors
 ///
 /// Returns [`ConvertError::UnsupportedFormat`] if the extension is unrecognized,
-/// [`ConvertError::Io`] if the file cannot be read, or other variants for
-/// parse/render failures.
+/// [`ConvertError::Io`] if the file cannot be read,
+/// [`ConvertError::UnsupportedElement`] if a document construct is not proved,
+/// [`ConvertError::ResourceLimit`] if the parsed document exceeds the standard
+/// renderer's page limit, or other variants for parse/render failures.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn convert(path: impl AsRef<std::path::Path>) -> Result<ConvertResult, ConvertError> {
     pipeline::convert(path)
@@ -107,7 +109,8 @@ pub fn convert(path: impl AsRef<std::path::Path>) -> Result<ConvertResult, Conve
 ///
 /// # Errors
 ///
-/// Returns [`ConvertError`] on unsupported format, I/O, parse, or render failure.
+/// Returns [`ConvertError`] on unsupported format or element, I/O, parse,
+/// render, or standard-renderer resource-limit failure.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn convert_with_options(
     path: impl AsRef<std::path::Path>,
@@ -127,7 +130,8 @@ pub fn convert_with_options(
 ///
 /// # Errors
 ///
-/// Returns [`ConvertError`] on parse or render failure.
+/// Returns [`ConvertError`] on an unsupported element, parse, render, or
+/// standard-renderer resource-limit failure.
 pub fn convert_bytes(
     data: &[u8],
     format: Format,
@@ -136,16 +140,16 @@ pub fn convert_bytes(
     pipeline::convert_bytes(data, format, options)
 }
 
-/// Render an IR Document to PDF bytes.
-///
-///// Render an IR [`Document`](ir::Document) directly to PDF bytes.
+/// Render an IR [`Document`](ir::Document) directly to PDF bytes.
 ///
 /// Takes a fully constructed [`ir::Document`] and runs it through
 /// the Typst codegen → PDF compilation pipeline.
 ///
 /// # Errors
 ///
-/// Returns [`ConvertError::Render`] if Typst compilation or PDF export fails.
+/// Returns [`ConvertError::ResourceLimit`] if the document exceeds the
+/// standard renderer's page limit, or [`ConvertError::Render`] if Typst
+/// compilation or PDF export fails.
 pub fn render_document(doc: &ir::Document) -> Result<Vec<u8>, ConvertError> {
     pipeline::render_document(doc)
 }

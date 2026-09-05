@@ -19,6 +19,8 @@ mod fit_to_page;
 mod indent;
 #[path = "xlsx_paper_state.rs"]
 mod paper_state;
+#[path = "xlsx_preflight.rs"]
+mod preflight;
 #[path = "xlsx_print_headings.rs"]
 mod print_headings;
 #[path = "xlsx_print_options.rs"]
@@ -205,6 +207,22 @@ fn sheet_fit(
     }
 }
 
+/// The declared fit bounds for a sheet whose printable content is drawings
+/// rather than cells. The drawing extents supply the width and height that
+/// these bounds are measured against.
+fn drawing_only_sheet_fit(
+    sheet_name: &str,
+    fitting_sheets: &std::collections::HashMap<String, fit_to_page::SheetFitToPage>,
+) -> xlsx_pagination::SheetFit {
+    let declared: Option<&fit_to_page::SheetFitToPage> = fitting_sheets.get(sheet_name);
+    let bound = |pages: u32| -> Option<u32> { (pages > 0).then_some(pages) };
+    xlsx_pagination::SheetFit {
+        pages_wide: declared.and_then(|fit| bound(fit.pages_wide)),
+        pages_tall: declared.and_then(|fit| bound(fit.pages_tall)),
+        ..xlsx_pagination::SheetFit::default()
+    }
+}
+
 /// The printed grid height of every row a sheet prints, in points.
 ///
 /// This is the same track a drawing anchor is measured against, not the
@@ -259,6 +277,17 @@ fn sheet_prints(sheet: &umya_spreadsheet::Worksheet, options: &ConvertOptions) -
                 | umya_spreadsheet::SheetStateValues::VeryHidden
         ),
     }
+}
+
+fn printed_sheet_names(
+    book: &umya_spreadsheet::Spreadsheet,
+    options: &ConvertOptions,
+) -> std::collections::HashSet<String> {
+    book.get_sheet_collection()
+        .iter()
+        .filter(|sheet| sheet_prints(sheet, options))
+        .map(|sheet| sheet.get_name().to_string())
+        .collect()
 }
 
 /// The first sheet that prints, honouring `sheet_names` and sheet visibility.
@@ -465,6 +494,7 @@ fn anchored_image(
         x_offset_pt,
         y_offset_pt,
         image,
+        clip_left_pt: None,
         clip_width_pt: None,
     }
 }
@@ -574,6 +604,9 @@ fn anchored_text_box(
         fill: anchor.fill,
         border: anchor.border,
         vertical_center: anchor.vertical_center,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
     }
 }
 
@@ -614,6 +647,8 @@ fn anchored_chart(
             width: placed.image.width.unwrap_or(100.0),
             height: placed.image.height.unwrap_or(50.0),
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: anchor.chart,
     }
@@ -654,6 +689,8 @@ fn chartsheet_page(
                     width: chart_box.width,
                     height: chart_box.height,
                     print_scale: 1.0,
+                    clip_left_pt: None,
+                    clip_width_pt: None,
                 }),
                 chart,
             }
@@ -677,19 +714,26 @@ pub struct XlsxParser;
 impl XlsxParser {
     /// Parse XLSX in streaming mode, returning one `Document` per chunk of rows.
     ///
-    /// Each chunk contains a single `SheetPage` with at most `chunk_size` rows.
-    /// This allows the caller to compile each chunk independently, bounding peak
-    /// memory during Typst compilation.
+    /// Each returned `Document` starts with at most `chunk_size` data rows from
+    /// one sheet. Repeated print-title rows may be prepended, and pagination may
+    /// expand that input into multiple `SheetPage`s. The caller can compile each
+    /// document independently to bound peak memory during Typst compilation.
+    ///
+    /// Returns [`ConvertError::UnsupportedElement`] before rendering when an
+    /// anchored drawing crosses vertical row flow that streaming cannot preserve.
     pub fn parse_streaming(
         &self,
         data: &[u8],
         options: &ConvertOptions,
         chunk_size: usize,
     ) -> Result<(Vec<Document>, Vec<ConvertWarning>), ConvertError> {
-        let cursor = Cursor::new(data);
+        preflight::ensure_safe_package_bounds(data)?;
+        let upstream_data = preflight::normalize_upstream_reader_inputs(data)?;
+        let cursor = Cursor::new(upstream_data.as_ref());
         let book = umya_spreadsheet::reader::xlsx::read_reader(cursor, true).map_err(|e| {
             crate::parser::parse_err(format!("Failed to parse XLSX (umya-spreadsheet): {e}"))
         })?;
+        preflight::ensure_supported_package(data, &printed_sheet_names(&book, options))?;
 
         let metadata = extract_xlsx_metadata(&book);
         let cond_fmt_hints = cond_fmt_raw::extract_cond_fmt_hints(data);
@@ -712,7 +756,7 @@ impl XlsxParser {
         let mut warnings = Vec::new();
 
         let mut chart_map = extract_charts_with_anchors(data);
-        let mut image_map = extract_images_with_anchors(data, &mut warnings);
+        let mut image_map = extract_images_with_anchors(data)?;
         let mut text_box_map = extract_text_boxes_with_anchors(data);
 
         let mut chunks = Vec::new();
@@ -784,20 +828,23 @@ impl XlsxParser {
                             metadata: metadata.clone(),
                             // Drawings past the printable width split into
                             // page-columns as Excel prints them (issue #713).
-                            pages: xlsx_pagination::split_drawing_only_page(SheetPage {
-                                name: sheet_name,
-                                size: sheet_page_size(
-                                    sheet,
-                                    pristine_paper_sheets.contains(sheet.get_name()),
-                                ),
-                                margins: sheet_print_margins(sheet),
-                                table: Table::default(),
-                                header: None,
-                                footer: None,
-                                charts,
-                                images,
-                                text_boxes,
-                            })
+                            pages: xlsx_pagination::split_drawing_only_page(
+                                SheetPage {
+                                    name: sheet_name,
+                                    size: sheet_page_size(
+                                        sheet,
+                                        pristine_paper_sheets.contains(sheet.get_name()),
+                                    ),
+                                    margins: sheet_print_margins(sheet),
+                                    table: Table::default(),
+                                    header: None,
+                                    footer: None,
+                                    charts,
+                                    images,
+                                    text_boxes,
+                                },
+                                drawing_only_sheet_fit(sheet.get_name(), &fitting_sheets),
+                            )
                             .into_iter()
                             .map(Page::Sheet)
                             .collect(),
@@ -876,6 +923,7 @@ impl XlsxParser {
             );
             let header_footer_scales_with_doc: bool =
                 sheet_header_footer_scales_with_doc(&sheet_name, &fitting_sheets);
+            let row_breaks = collect_row_breaks(sheet);
 
             // Process rows in chunks
             let mut chunk_start = row_start;
@@ -966,6 +1014,19 @@ impl XlsxParser {
                         normal_font.as_ref(),
                     );
                 }
+                xlsx_pagination::ensure_supported_vertical_drawing_flow(
+                    &sheet_page,
+                    fit,
+                    header_footer_scales_with_doc,
+                    !row_breaks.is_empty(),
+                    chunk_end < row_end,
+                )?;
+                xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                    &sheet_page,
+                    title_columns,
+                    fit,
+                    header_footer_scales_with_doc,
+                )?;
                 let doc = Document {
                     metadata: metadata.clone(),
                     pages: xlsx_pagination::split_sheet_page_by_width(
@@ -1005,10 +1066,13 @@ impl Parser for XlsxParser {
         data: &[u8],
         options: &ConvertOptions,
     ) -> Result<(Document, Vec<ConvertWarning>), ConvertError> {
-        let cursor = Cursor::new(data);
+        preflight::ensure_safe_package_bounds(data)?;
+        let upstream_data = preflight::normalize_upstream_reader_inputs(data)?;
+        let cursor = Cursor::new(upstream_data.as_ref());
         let book = umya_spreadsheet::reader::xlsx::read_reader(cursor, true).map_err(|e| {
             crate::parser::parse_err(format!("Failed to parse XLSX (umya-spreadsheet): {e}"))
         })?;
+        preflight::ensure_supported_package(data, &printed_sheet_names(&book, options))?;
 
         // Extract metadata from umya-spreadsheet properties
         let metadata = extract_xlsx_metadata(&book);
@@ -1033,7 +1097,7 @@ impl Parser for XlsxParser {
 
         // Extract charts with anchor positions per sheet
         let mut chart_map = extract_charts_with_anchors(data);
-        let mut image_map = extract_images_with_anchors(data, &mut warnings);
+        let mut image_map = extract_images_with_anchors(data)?;
         let mut text_box_map = extract_text_boxes_with_anchors(data);
 
         let sheet_count = book.get_sheet_collection().len();
@@ -1101,20 +1165,23 @@ impl Parser for XlsxParser {
                         // Drawings past the printable width split into
                         // page-columns as Excel prints them (issue #713).
                         pages.extend(
-                            xlsx_pagination::split_drawing_only_page(SheetPage {
-                                name: sheet_name,
-                                size: sheet_page_size(
-                                    sheet,
-                                    pristine_paper_sheets.contains(sheet.get_name()),
-                                ),
-                                margins: sheet_print_margins(sheet),
-                                table: Table::default(),
-                                header: None,
-                                footer: None,
-                                charts,
-                                images,
-                                text_boxes,
-                            })
+                            xlsx_pagination::split_drawing_only_page(
+                                SheetPage {
+                                    name: sheet_name,
+                                    size: sheet_page_size(
+                                        sheet,
+                                        pristine_paper_sheets.contains(sheet.get_name()),
+                                    ),
+                                    margins: sheet_print_margins(sheet),
+                                    table: Table::default(),
+                                    header: None,
+                                    footer: None,
+                                    charts,
+                                    images,
+                                    text_boxes,
+                                },
+                                drawing_only_sheet_fit(sheet.get_name(), &fitting_sheets),
+                            )
                             .into_iter()
                             .map(Page::Sheet),
                         );
@@ -1256,6 +1323,19 @@ impl Parser for XlsxParser {
                         normal_font.as_ref(),
                     );
                 }
+                xlsx_pagination::ensure_supported_vertical_drawing_flow(
+                    &sheet_page,
+                    fit,
+                    header_footer_scales_with_doc,
+                    false,
+                    false,
+                )?;
+                xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                    &sheet_page,
+                    title_columns,
+                    fit,
+                    header_footer_scales_with_doc,
+                )?;
                 pages.extend(
                     xlsx_pagination::split_sheet_page_by_width(
                         sheet_page,
@@ -1385,6 +1465,19 @@ impl Parser for XlsxParser {
                             normal_font.as_ref(),
                         );
                     }
+                    xlsx_pagination::ensure_supported_vertical_drawing_flow(
+                        &sheet_page,
+                        fit,
+                        header_footer_scales_with_doc,
+                        true,
+                        false,
+                    )?;
+                    xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                        &sheet_page,
+                        title_columns,
+                        fit,
+                        header_footer_scales_with_doc,
+                    )?;
                     pages.extend(
                         xlsx_pagination::split_sheet_page_by_width(
                             sheet_page,

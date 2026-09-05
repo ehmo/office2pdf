@@ -5341,6 +5341,7 @@ pub(super) fn escape_typst(text: &str) -> String {
     let mut after_linebreak = false;
     while let Some(ch) = chars.next() {
         let should_escape_list_prefix: bool = line_leading_marker == Some(char_index);
+        let starts_typst_ellipsis: bool = ch == '.' && chars.clone().take(2).eq(['.', '.']);
 
         match ch {
             // A hard line break (`<w:br/>`, carried through the IR as '\n') must
@@ -5389,6 +5390,10 @@ pub(super) fn escape_typst(text: &str) -> String {
             _ if should_escape_list_prefix => {
                 result.push('\\');
                 result.push(ch);
+            }
+            '.' if starts_typst_ellipsis => {
+                result.push('\\');
+                result.push('.');
             }
             '.' if enum_marker_dot == Some(char_index) => {
                 result.push('\\');
