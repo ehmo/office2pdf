@@ -192,6 +192,23 @@ struct GenCtx {
     cell_sheet_seat: Option<SheetCellSeat>,
     /// Whether emission is inside a spill cell's clipped wrapper (issue #811).
     in_spill_cell: bool,
+    /// Horizontal distance from the printed sheet table's left edge to the
+    /// physical page edge. A spill cell can paint clipped text past the print
+    /// margin, but Typst drops glyphs whose origins pass the page itself.
+    /// `None` outside a top-level sheet table.
+    sheet_page_right_from_table_left_pt: Option<f64>,
+    /// Horizontal distance from the physical page's left edge to the printed
+    /// sheet table's left edge. A right-aligned spill uses it to identify the
+    /// prefix whose glyph origins fall off the page.
+    /// `None` outside a top-level sheet table.
+    sheet_page_left_from_table_left_pt: Option<f64>,
+    /// Horizontal distance from the current sheet cell's text origin to the
+    /// physical page edge. Set only while generating that top-level cell.
+    spill_page_remaining_pt: Option<f64>,
+    /// Horizontal distance from the physical page's left edge to the current
+    /// sheet cell's right text edge. Set only while generating that top-level
+    /// cell.
+    spill_page_left_to_content_right_pt: Option<f64>,
     /// Numerals the active section's `PAGE` fields render in. A header is
     /// generated as part of its page's setup, so the section's `w:pgNumType
     /// w:fmt` reaches the field through the context rather than through the
@@ -274,6 +291,10 @@ impl GenCtx {
             cell_sheet_row_line: None,
             cell_sheet_seat: None,
             in_spill_cell: false,
+            sheet_page_right_from_table_left_pt: None,
+            sheet_page_left_from_table_left_pt: None,
+            spill_page_remaining_pt: None,
+            spill_page_left_to_content_right_pt: None,
             page_number_format: PageNumberFormat::default(),
             document_default_text: None,
             document_default_tab_stop_pt: None,
@@ -944,6 +965,12 @@ fn generate_table_page(
     // The page margins themselves stay put: the header and footer keep their
     // own alignment, which the centering does not touch.
     let centering_inset_pt: Option<f64> = horizontal_centering_inset_pt(page, &size);
+    let enclosing_sheet_page_right: Option<f64> = ctx.sheet_page_right_from_table_left_pt;
+    let enclosing_sheet_page_left: Option<f64> = ctx.sheet_page_left_from_table_left_pt;
+    ctx.sheet_page_right_from_table_left_pt =
+        Some(size.width - page.margins.left - centering_inset_pt.unwrap_or(0.0));
+    ctx.sheet_page_left_from_table_left_pt =
+        Some(page.margins.left + centering_inset_pt.unwrap_or(0.0));
 
     // Every glyph Excel prints on a sheet — the grid's cells and the text of
     // the drawings floating over it alike — advances on a whole-point grid in
@@ -988,6 +1015,8 @@ fn generate_table_page(
     if centering_inset_pt.is_some() {
         out.push_str("\n]\n");
     }
+    ctx.sheet_page_right_from_table_left_pt = enclosing_sheet_page_right;
+    ctx.sheet_page_left_from_table_left_pt = enclosing_sheet_page_left;
     Ok(())
 }
 

@@ -887,6 +887,42 @@ fn test_wide_sheet_preserves_every_printable_column_group() {
     assert_eq!(visible_cells, expected_cells);
 }
 
+#[test]
+fn oversized_column_does_not_widen_later_page_groups() {
+    // A single column wider than the paper must stay intact, but it must not
+    // become the packing width for ordinary columns that follow it. Otherwise
+    // those later columns are emitted past the physical page edge and their
+    // text disappears from selection.
+    let widths = [vec![1534.0], vec![100.0; 10]].concat();
+    let cells: Vec<TableCell> = (0..widths.len())
+        .map(|index| cell(&format!("c{index}")))
+        .collect();
+    let page = make_page(
+        widths,
+        vec![TableRow {
+            minimum_height: None,
+            cells,
+            height: None,
+        }],
+    );
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert_eq!(pages[0].table.column_widths, vec![1534.0]);
+    assert!(
+        pages[1..]
+            .iter()
+            .all(|page| page.table.column_widths.iter().sum::<f64>() <= 400.0)
+    );
+    let visible_cells: Vec<String> = pages
+        .iter()
+        .flat_map(|page| page.table.rows[0].cells.iter().map(cell_text))
+        .collect();
+    let expected_cells: Vec<String> = (0..11).map(|index| format!("c{index}")).collect();
+    assert_eq!(visible_cells, expected_cells);
+}
+
 /// Excel's `fitToWidth` squeezes the sheet onto that many pages instead of
 /// letting it spill sideways: 800pt of columns on a 400pt printable width
 /// scales to half size and stays on one page.

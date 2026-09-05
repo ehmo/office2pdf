@@ -16,6 +16,307 @@ fn build_xlsx_bytes(sheet_name: &str, cells: &[(&str, &str)]) -> Vec<u8> {
     cursor.into_inner()
 }
 
+fn prefix_spreadsheetml_elements(xml: &[u8]) -> Vec<u8> {
+    const DEFAULT_NS: &[u8] =
+        br#"xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main""#;
+    const PREFIXED_NS: &[u8] =
+        br#"xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main""#;
+    let Some(namespace_at) = xml
+        .windows(DEFAULT_NS.len())
+        .position(|window| window == DEFAULT_NS)
+    else {
+        return xml.to_vec();
+    };
+    let mut namespaced = Vec::with_capacity(xml.len() + 2);
+    namespaced.extend_from_slice(&xml[..namespace_at]);
+    namespaced.extend_from_slice(PREFIXED_NS);
+    namespaced.extend_from_slice(&xml[namespace_at + DEFAULT_NS.len()..]);
+
+    let mut prefixed = Vec::with_capacity(namespaced.len() + 64);
+    let mut index = 0;
+    while index < namespaced.len() {
+        prefixed.push(namespaced[index]);
+        if namespaced[index] != b'<' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if index < namespaced.len() && namespaced[index] == b'/' {
+            prefixed.push(b'/');
+            index += 1;
+        }
+        let name_start = index;
+        while index < namespaced.len()
+            && !matches!(
+                namespaced[index],
+                b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>'
+            )
+        {
+            index += 1;
+        }
+        let name = &namespaced[name_start..index];
+        if !name.is_empty() && !name.contains(&b':') && name[0].is_ascii_alphabetic() {
+            prefixed.extend_from_slice(b"x:");
+        }
+        prefixed.extend_from_slice(name);
+    }
+    prefixed
+}
+
+fn prefix_spreadsheetml_package(data: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+
+    let mut archive = zip::ZipArchive::new(Cursor::new(data)).expect("readable workbook");
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("readable entry");
+        let name = entry.name().to_string();
+        let compression = entry.compression();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("readable entry bytes");
+        if name.ends_with(".xml") {
+            bytes = prefix_spreadsheetml_elements(&bytes);
+        }
+        let options = zip::write::FileOptions::default().compression_method(compression);
+        writer.start_file(name, options).expect("entry starts");
+        writer.write_all(&bytes).expect("entry writes");
+    }
+    writer.finish().expect("workbook closes").into_inner()
+}
+
+fn add_prefixed_external_hyperlink(data: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+
+    let mut archive = zip::ZipArchive::new(Cursor::new(data)).expect("readable workbook");
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut has_sheet_relationships = false;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("readable entry");
+        let name = entry.name().to_string();
+        let compression = entry.compression();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("readable entry bytes");
+        if name == "xl/worksheets/sheet1.xml" {
+            let xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+            bytes = xml
+                .replace(
+                    "</worksheet>",
+                    r#"<hyperlinks><hyperlink ref="A1" r:id="rIdPdfpixHyperlink"/></hyperlinks></worksheet>"#,
+                )
+                .into_bytes();
+        } else if name == "xl/worksheets/_rels/sheet1.xml.rels" {
+            has_sheet_relationships = true;
+            let xml = String::from_utf8(bytes).expect("relationships are UTF-8");
+            bytes = xml
+                .replace(
+                    "</Relationships>",
+                    r#"<Relationship Id="rIdPdfpixHyperlink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.test/" TargetMode="External"/></Relationships>"#,
+                )
+                .replace(
+                    r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+                    r#"<rel:Relationships xmlns:rel="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+                )
+                .replace("<Relationship ", "<rel:Relationship ")
+                .replace("</Relationships>", "</rel:Relationships>")
+                .into_bytes();
+        }
+        let options = zip::write::FileOptions::default().compression_method(compression);
+        writer.start_file(name, options).expect("entry starts");
+        writer.write_all(&bytes).expect("entry writes");
+    }
+    if !has_sheet_relationships {
+        writer
+            .start_file(
+                "xl/worksheets/_rels/sheet1.xml.rels",
+                zip::write::FileOptions::default(),
+            )
+            .expect("relationships entry starts");
+        writer
+            .write_all(br#"<?xml version="1.0" encoding="UTF-8"?><rel:Relationships xmlns:rel="http://schemas.openxmlformats.org/package/2006/relationships"><rel:Relationship Id="rIdPdfpixHyperlink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.test/" TargetMode="External"/></rel:Relationships>"#)
+            .expect("relationships entry writes");
+    }
+    writer.finish().expect("workbook closes").into_inner()
+}
+
+fn add_unresolved_printer_settings(data: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+
+    let mut archive = zip::ZipArchive::new(Cursor::new(data)).expect("readable workbook");
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("readable entry");
+        let name = entry.name().to_string();
+        let compression = entry.compression();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("readable entry bytes");
+        if name == "xl/worksheets/sheet1.xml" {
+            let xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+            bytes = xml
+                .replace(
+                    "</worksheet>",
+                    r#"<pageSetup paperSize="9" r:id="rIdMissing"/></worksheet>"#,
+                )
+                .into_bytes();
+        }
+        let options = zip::write::FileOptions::default().compression_method(compression);
+        writer.start_file(name, options).expect("entry starts");
+        writer.write_all(&bytes).expect("entry writes");
+    }
+    writer.finish().expect("workbook closes").into_inner()
+}
+
+fn rewrite_package_entry(
+    data: &[u8],
+    target: &str,
+    transform: impl FnOnce(Vec<u8>) -> Vec<u8>,
+) -> Vec<u8> {
+    use std::io::{Read, Write};
+
+    let mut transform = Some(transform);
+    let mut archive = zip::ZipArchive::new(Cursor::new(data)).expect("readable workbook");
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("readable entry");
+        let name = entry.name().to_string();
+        let compression = entry.compression();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).expect("readable entry bytes");
+        if name == target {
+            bytes = transform.take().expect("target entry is unique")(bytes);
+        }
+        let options = zip::write::FileOptions::default().compression_method(compression);
+        writer.start_file(name, options).expect("entry starts");
+        writer.write_all(&bytes).expect("entry writes");
+    }
+    assert!(transform.is_none(), "target entry exists");
+    writer.finish().expect("workbook closes").into_inner()
+}
+
+fn pair_workbook_sheet_element(data: &[u8]) -> Vec<u8> {
+    pair_workbook_sheet_element_with_content(data, "")
+}
+
+fn pair_workbook_sheet_element_with_content(data: &[u8], content: &str) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/workbook.xml", |bytes| {
+        let xml = String::from_utf8(bytes).expect("workbook is UTF-8");
+        let sheet_start = xml.find("<sheet ").expect("sheet starts");
+        let close = xml[sheet_start..].find("/>").expect("sheet is empty") + sheet_start;
+        format!("{}>{content}</sheet>{}", &xml[..close], &xml[close + 2..]).into_bytes()
+    })
+}
+
+fn encode_workbook_utf16be(data: &[u8]) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/workbook.xml", |bytes| {
+        let xml = String::from_utf8(bytes)
+            .expect("workbook is UTF-8")
+            .replace("encoding=\"UTF-8\"", "encoding=\"UTF-16BE\"");
+        let mut encoded = vec![0xfe, 0xff];
+        for unit in xml.encode_utf16() {
+            encoded.extend_from_slice(&unit.to_be_bytes());
+        }
+        encoded
+    })
+}
+
+fn omit_worksheet_row_and_cell_references(data: &[u8]) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        let mut xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+        for reference in ["A1", "B1", "A2", "B2"] {
+            xml = xml.replace(&format!(" r=\"{reference}\""), "");
+        }
+        for row in [1, 2] {
+            xml = xml.replace(&format!("<row r=\"{row}\""), "<row");
+        }
+        xml.into_bytes()
+    })
+}
+
+fn make_missing_row_follow_xlsx_limit(data: &[u8]) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        String::from_utf8(bytes)
+            .expect("worksheet is UTF-8")
+            .replace("<row r=\"1\"", "<row r=\"1048576\"")
+            .replace(" r=\"A1\"", " r=\"A1048576\"")
+            .replace(" r=\"A2\"", "")
+            .replace("<row r=\"2\"", "<row")
+            .into_bytes()
+    })
+}
+
+fn make_missing_cell_follow_xlsx_limit(data: &[u8]) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        String::from_utf8(bytes)
+            .expect("worksheet is UTF-8")
+            .replace(" r=\"A1\"", " r=\"XFD1\"")
+            .replace(" r=\"B1\"", "")
+            .into_bytes()
+    })
+}
+
+fn replace_worksheet_reference(data: &[u8], from: &str, to: &str) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        let xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+        assert!(xml.contains(from), "worksheet contains {from:?}");
+        xml.replacen(from, to, 1).into_bytes()
+    })
+}
+
+fn replace_cell_with_inline_rich_text(data: &[u8], coordinate: &str) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        let xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+        let marker = format!("<c r=\"{coordinate}\"");
+        let start = xml.find(&marker).expect("target cell starts");
+        let end = xml[start..].find("</c>").expect("target cell ends") + start + "</c>".len();
+        format!(
+            "{}<c r=\"{coordinate}\" t=\"inlineStr\"><is>\
+             <r><rPr><b/></rPr><t>Rich</t></r>\
+             <r><t xml:space=\"preserve\"> text</t></r>\
+             <r><rPr><i/></rPr><t> stays</t></r>\
+             <r><t> whole</t></r>\
+             </is></c>{}",
+            &xml[..start],
+            &xml[end..],
+        )
+        .into_bytes()
+    })
+}
+
+fn replace_cell_with_multiline_rich_text(data: &[u8], coordinate: &str) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        let xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+        let marker = format!("<c r=\"{coordinate}\"");
+        let start = xml.find(&marker).expect("target cell starts");
+        let end = xml[start..].find("</c>").expect("target cell ends") + start + "</c>".len();
+        format!(
+            "{}<c r=\"{coordinate}\" t=\"inlineStr\"><is>\
+             <r><t>first line</t></r>\
+             <r><rPr><b/></rPr><t>&#10;second </t></r>\
+             <r><rPr><sz val=\"25\"/></rPr><t>large</t></r>\
+             <r><t> line&#10;</t></r>\
+             <r><rPr><i/></rPr><t>last line</t></r>\
+             </is></c>{}",
+            &xml[..start],
+            &xml[end..],
+        )
+        .into_bytes()
+    })
+}
+
+fn replace_cell_with_inline_plain_text(data: &[u8], coordinate: &str, text: &str) -> Vec<u8> {
+    rewrite_package_entry(data, "xl/worksheets/sheet1.xml", |bytes| {
+        let xml = String::from_utf8(bytes).expect("worksheet is UTF-8");
+        let marker = format!("<c r=\"{coordinate}\"");
+        let start = xml.find(&marker).expect("target cell starts");
+        let end = xml[start..].find("</c>").expect("target cell ends") + start + "</c>".len();
+        format!(
+            "{}<c r=\"{coordinate}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{text}</t></is></c>{}",
+            &xml[..start],
+            &xml[end..],
+        )
+        .into_bytes()
+    })
+}
+
 /// Helper: build XLSX with multiple sheets.
 fn build_xlsx_multi_sheet(sheets: &[(&str, &[(&str, &str)])]) -> Vec<u8> {
     let mut book = umya_spreadsheet::new_file();
@@ -112,6 +413,801 @@ fn test_parse_single_cell() {
     assert_eq!(tp.table.rows.len(), 1);
     assert_eq!(tp.table.rows[0].cells.len(), 1);
     assert_eq!(cell_text(&tp.table.rows[0].cells[0]), "Hello");
+}
+
+#[test]
+fn prefixed_spreadsheetml_elements_remain_visible() {
+    let data =
+        prefix_spreadsheetml_package(&build_xlsx_bytes("Sheet1", &[("A1", "prefixed text")]));
+    let parser = XlsxParser;
+    let (doc, _warnings) = parser
+        .parse(&data, &ConvertOptions::default())
+        .expect("prefixed SpreadsheetML must parse");
+
+    let page = get_sheet_page(&doc, 0);
+    assert_eq!(cell_text(&page.table.rows[0].cells[0]), "prefixed text");
+}
+
+#[test]
+fn prefixed_package_relationship_elements_remain_resolvable() {
+    let data =
+        add_prefixed_external_hyperlink(&build_xlsx_bytes("Sheet1", &[("A1", "linked text")]));
+    let parser = XlsxParser;
+    let (doc, _warnings) = parser
+        .parse(&data, &ConvertOptions::default())
+        .expect("prefixed package relationships must parse");
+
+    let page = get_sheet_page(&doc, 0);
+    assert_eq!(cell_text(&page.table.rows[0].cells[0]), "linked text");
+}
+
+#[test]
+fn unresolved_worksheet_printer_settings_refuse_before_upstream_parse() {
+    let data =
+        add_unresolved_printer_settings(&build_xlsx_bytes("Sheet1", &[("A1", "print settings")]));
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("an unresolved printer-settings relationship must refuse");
+
+    assert!(
+        matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == "unresolved worksheet printer settings"
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn paired_empty_sheet_elements_keep_their_worksheet() {
+    let data = pair_workbook_sheet_element(&build_xlsx_bytes("Sheet1", &[("A1", "paired sheet")]));
+    let (doc, _warnings) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("paired empty sheet elements are valid XML");
+
+    let page = get_sheet_page(&doc, 0);
+    assert_eq!(cell_text(&page.table.rows[0].cells[0]), "paired sheet");
+}
+
+#[test]
+fn paired_sheet_with_ignorable_xml_keeps_its_worksheet() {
+    let data = pair_workbook_sheet_element_with_content(
+        &build_xlsx_bytes("Sheet1", &[("A1", "commented sheet")]),
+        "\n<!-- preserved package note --><?pdfpix test?>\n",
+    );
+    let (doc, _warnings) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("comments and whitespace do not give a sheet element content");
+
+    let page = get_sheet_page(&doc, 0);
+    assert_eq!(cell_text(&page.table.rows[0].cells[0]), "commented sheet");
+}
+
+#[test]
+fn utf16be_workbook_xml_keeps_its_worksheet() {
+    let data = encode_workbook_utf16be(&build_xlsx_bytes("Sheet1", &[("A1", "UTF-16 workbook")]));
+    let (doc, _warnings) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("UTF-16BE workbook XML is valid OOXML");
+
+    let page = get_sheet_page(&doc, 0);
+    assert_eq!(cell_text(&page.table.rows[0].cells[0]), "UTF-16 workbook");
+}
+
+#[test]
+fn omitted_row_and_cell_references_are_inferred_from_order() {
+    let data = omit_worksheet_row_and_cell_references(&build_xlsx_bytes(
+        "Sheet1",
+        &[
+            ("A1", "north"),
+            ("B1", "east"),
+            ("A2", "south"),
+            ("B2", "west"),
+        ],
+    ));
+    let (doc, _warnings) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("ordered cells may omit explicit references");
+
+    let page = get_sheet_page(&doc, 0);
+    assert_eq!(page.table.rows.len(), 2);
+    assert_eq!(cell_text(&page.table.rows[0].cells[0]), "north");
+    assert_eq!(cell_text(&page.table.rows[0].cells[1]), "east");
+    assert_eq!(cell_text(&page.table.rows[1].cells[0]), "south");
+    assert_eq!(cell_text(&page.table.rows[1].cells[1]), "west");
+}
+
+#[test]
+fn omitted_row_beyond_xlsx_limit_refuses_by_name() {
+    let data = make_missing_row_follow_xlsx_limit(&build_xlsx_bytes(
+        "Sheet1",
+        &[("A1", "last row"), ("A2", "overflow")],
+    ));
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("an omitted row after row 1,048,576 cannot be inferred");
+
+    assert!(
+        matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == "cannot infer worksheet row beyond XLSX bounds"
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn omitted_cell_beyond_xlsx_limit_refuses_by_name() {
+    let data = make_missing_cell_follow_xlsx_limit(&build_xlsx_bytes(
+        "Sheet1",
+        &[("A1", "last column"), ("B1", "overflow")],
+    ));
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("an omitted cell after column XFD cannot be inferred");
+
+    assert!(
+        matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == "cannot infer worksheet cell beyond XLSX bounds"
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn invalid_declared_rows_refuse_by_name() {
+    for declared in ["0", "1048577", "not-a-row"] {
+        let data = replace_worksheet_reference(
+            &build_xlsx_bytes("Sheet1", &[("A1", "value")]),
+            "<row r=\"1\"",
+            &format!("<row r=\"{declared}\""),
+        );
+        let error = XlsxParser
+            .parse(&data, &ConvertOptions::default())
+            .expect_err("an invalid declared worksheet row must refuse");
+
+        assert!(
+            matches!(
+                error,
+                ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                    if element == "worksheet row reference outside XLSX bounds"
+            ),
+            "unexpected error for {declared:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn invalid_declared_cells_refuse_by_name() {
+    for declared in ["XFE1", "A0", "1A", "A1048577", "ZZZZZZZZZZZZZZZZZZZZ1"] {
+        let data = replace_worksheet_reference(
+            &build_xlsx_bytes("Sheet1", &[("A1", "value")]),
+            "r=\"A1\"",
+            &format!("r=\"{declared}\""),
+        );
+        let error = XlsxParser
+            .parse(&data, &ConvertOptions::default())
+            .expect_err("an invalid declared worksheet cell must refuse");
+
+        assert!(
+            matches!(
+                error,
+                ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                    if element == "worksheet cell reference outside XLSX bounds"
+            ),
+            "unexpected error for {declared:?}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn declared_cell_row_mismatch_refuses_by_name() {
+    let data = replace_worksheet_reference(
+        &build_xlsx_bytes("Sheet1", &[("A1", "value")]),
+        "r=\"A1\"",
+        "r=\"A2\"",
+    );
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("a cell reference cannot name a different row");
+
+    assert!(
+        matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == "worksheet cell reference does not match its row"
+        ),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn inline_rich_text_keeps_every_run_and_its_formatting() {
+    let data = replace_cell_with_inline_rich_text(
+        &build_xlsx_bytes("Sheet1", &[("A1", "placeholder")]),
+        "A1",
+    );
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("inline rich text parses");
+    let cell = &get_sheet_page(&document, 0).table.rows[0].cells[0];
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        panic!("inline rich text produces one paragraph");
+    };
+
+    assert_eq!(cell_text(cell), "Rich text stays whole");
+    assert_eq!(paragraph.runs.len(), 4);
+    assert_eq!(paragraph.runs[0].style.bold, Some(true));
+    assert_eq!(paragraph.runs[2].style.italic, Some(true));
+}
+
+#[test]
+fn rich_text_spill_gets_a_partitioned_selectable_suffix() {
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    sheet.get_cell_mut("A1").set_value("placeholder");
+    sheet.get_cell_mut("B1").set_value("block");
+    sheet.get_page_margins_mut().set_left(7.75);
+    sheet.get_page_margins_mut().set_right(0.25);
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+    let data = replace_cell_with_inline_rich_text(&workbook.into_inner(), "A1");
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("inline rich text parses");
+    let typst = crate::render::typst_gen::generate_typst_with_options(
+        &document,
+        &ConvertOptions::default(),
+    )
+    .expect("rich text spill generates Typst");
+
+    assert!(typst.source.contains("let o2p-runs = ("));
+    assert!(typst.source.contains("let o2p-run-width"));
+    assert!(typst.source.contains("let o2p-missing"));
+}
+
+#[test]
+fn tabbed_spill_gets_a_partitioned_selectable_suffix() {
+    let source = format!("prefix\t{}", "suffix ".repeat(60));
+    let data = build_xlsx_bytes("Sheet1", &[("A1", source.as_str()), ("B1", "block")]);
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("tabbed spill parses");
+    let typst = crate::render::typst_gen::generate_typst_with_options(
+        &document,
+        &ConvertOptions::default(),
+    )
+    .expect("tabbed spill generates Typst");
+
+    assert!(typst.source.contains("let o2p-tab-missing"));
+    assert!(typst.source.contains("let o2p-repair = text("));
+}
+
+#[test]
+fn clipped_cell_text_remains_selectable_in_the_pdf() {
+    let source = "abcdefghijklmnopqrstuvwxyz abcdefghij";
+    let data = build_xlsx_bytes(
+        "Sheet1",
+        &[
+            ("A1", "x"),
+            ("B1", "x"),
+            ("C1", "x"),
+            ("D1", "x"),
+            ("E1", "x"),
+            ("F1", "x"),
+            ("G1", "x"),
+            ("H1", "x"),
+            ("I1", source),
+            ("J1", "block"),
+            ("K1", "block"),
+        ],
+    );
+    let options = ConvertOptions::default();
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &options)
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    assert!(
+        extracted
+            .split_whitespace()
+            .collect::<String>()
+            .contains(&source.split_whitespace().collect::<String>()),
+        "a visually clipped cell must retain its complete selectable text: {extracted:?}"
+    );
+}
+
+#[test]
+fn very_long_clipped_cell_keeps_every_selectable_character() {
+    let source = "q".repeat(2_600);
+    let data = build_xlsx_bytes("Sheet1", &[("A1", source.as_str()), ("B1", "block")]);
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    assert_eq!(
+        extracted
+            .chars()
+            .filter(|character| *character == 'q')
+            .count(),
+        source.len(),
+        "the selectable repair must not wrap and clip a long suffix"
+    );
+}
+
+#[test]
+fn very_long_spaced_cell_keeps_every_selectable_character() {
+    let source = "qa ".repeat(1_300);
+    let data = build_xlsx_bytes(
+        "Sheet1",
+        &[
+            ("A1", "x"),
+            ("B1", "x"),
+            ("C1", "x"),
+            ("D1", "x"),
+            ("E1", "x"),
+            ("F1", "x"),
+            ("G1", "x"),
+            ("H1", "x"),
+            ("I1", source.as_str()),
+            ("J1", "block"),
+            ("K1", "block"),
+        ],
+    );
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    assert_eq!(
+        extracted
+            .chars()
+            .filter(|character| *character == 'q')
+            .count(),
+        1_300,
+        "the selectable repair must keep a spaced suffix on one line"
+    );
+}
+
+#[test]
+fn right_aligned_spill_keeps_every_selectable_character() {
+    let source = "q".repeat(120);
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    let cell = sheet.get_cell_mut("A1");
+    cell.set_value(source.as_str());
+    cell.get_style_mut()
+        .get_alignment_mut()
+        .set_horizontal(umya_spreadsheet::HorizontalAlignmentValues::Right);
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+
+    let data = workbook.into_inner();
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("right-aligned spill parses");
+    let typst = crate::render::typst_gen::generate_typst_with_options(
+        &document,
+        &ConvertOptions::default(),
+    )
+    .expect("right-aligned spill generates Typst");
+    assert!(
+        typst.source.contains("let o2p-first-visible"),
+        "right-aligned spill needs a selectable-prefix partition"
+    );
+    assert!(
+        typst.source.contains("let o2p-spill = o2p-original"),
+        "the selectable-prefix repair must not change the visible run"
+    );
+}
+
+#[test]
+fn varied_long_blocker_clipped_cell_keeps_one_selectable_copy() {
+    let source = (0..300)
+        .map(|index| format!("q{index} alpha-beta sentence."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let data = build_xlsx_bytes(
+        "Sheet1",
+        &[
+            ("A1", "x"),
+            ("B1", "x"),
+            ("C1", "x"),
+            ("D1", source.as_str()),
+            ("G1", "block"),
+        ],
+    );
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(
+        counts(&extracted),
+        counts(&format!("xxx{source}block")),
+        "the visible prefix and selectable suffix must partition a varied long cell"
+    );
+}
+
+#[test]
+fn varied_long_print_range_cell_keeps_one_selectable_copy() {
+    let source = (0..120)
+        .map(|index| format!("q{index} alpha-beta sentence."))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    sheet.get_cell_mut("A1").set_value("x");
+    sheet.get_cell_mut("E1").set_value("x");
+    let cell = sheet.get_cell_mut("D3");
+    cell.set_value(source.as_str());
+    cell.get_style_mut().get_font_mut().set_name("Arial");
+    cell.get_style_mut().get_font_mut().set_size(10.0);
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+    let data = workbook.into_inner();
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(
+        counts(&extracted),
+        counts(&format!("xx{source}")),
+        "a long cell at the print-range edge must remain selectable once"
+    );
+}
+
+#[test]
+fn wide_column_page_edge_cell_keeps_one_selectable_copy() {
+    let source = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    sheet.get_column_dimension_mut("A").set_width(220.0);
+    let cell = sheet.get_cell_mut("A1");
+    cell.set_value(source.as_str());
+    cell.get_style_mut().get_font_mut().set_name("Arial");
+    cell.get_style_mut().get_font_mut().set_size(24.0);
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+    let data = workbook.into_inner();
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("workbook parses");
+    let cell = &get_sheet_page(&document, 0).table.rows[0].cells[0];
+    assert_eq!(cell.spill_width, None, "the text fits its wide cell");
+    let typst =
+        crate::render::typst_gen::generate_typst(&document).expect("Typst source generates");
+    assert!(
+        typst.source.contains("o2p-page-missing"),
+        "a cell extending past the PDF page must repair its clipped suffix"
+    );
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(counts(&extracted), counts(&source));
+}
+
+#[test]
+fn dense_clipped_cells_keep_every_selectable_character() {
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    let mut expected = String::new();
+    for row in 1..=180 {
+        for column in 'A'..='H' {
+            let repetitions = ((row * 8 + column as usize) % 12) + 1;
+            let value = format!("q{row}{column} {}", "alpha, абвгд; ".repeat(repetitions));
+            expected.push_str(&value);
+            sheet
+                .get_cell_mut(format!("{column}{row}"))
+                .set_value(value);
+        }
+    }
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+    let result = crate::convert_bytes(
+        &workbook.into_inner(),
+        crate::Format::Xlsx,
+        &ConvertOptions::default(),
+    )
+    .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(
+        counts(&extracted),
+        counts(&expected),
+        "every dense clipped cell must partition into one visible prefix and one selectable suffix"
+    );
+}
+
+#[test]
+fn multiline_cell_in_a_tight_row_keeps_every_selectable_character() {
+    let source = (0..20)
+        .map(|index| format!("q{index} {}", "alpha, абвгд; sentence. ".repeat(3)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let data = build_xlsx_bytes(
+        "Sheet1",
+        &[("A1", "left"), ("B1", "placeholder"), ("C1", "right")],
+    );
+    let data = rewrite_package_entry(&data, "xl/worksheets/sheet1.xml", |bytes| {
+        String::from_utf8(bytes)
+            .expect("worksheet is UTF-8")
+            .replacen(
+                "<row r=\"1\"",
+                "<row r=\"1\" ht=\"16\" customHeight=\"1\"",
+                1,
+            )
+            .into_bytes()
+    });
+    let data = replace_cell_with_inline_plain_text(&data, "B1", &source.replace('\n', "&#10;"));
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("workbook parses");
+    assert_eq!(
+        get_sheet_page(&document, 0).table.rows[0].height,
+        Some(16.0),
+        "the fixture must exercise the corpus row's 16pt track"
+    );
+    assert_eq!(
+        cell_text(&get_sheet_page(&document, 0).table.rows[0].cells[1])
+            .chars()
+            .filter(|character| *character == '\n')
+            .count(),
+        19,
+        "the fixture must preserve the source line feeds"
+    );
+    assert_eq!(
+        get_sheet_page(&document, 0).table.rows[0].cells[1].spill_width,
+        None,
+        "the fixture must exercise normal cell layout, not spill clipping"
+    );
+    let typst =
+        crate::render::typst_gen::generate_typst(&document).expect("Typst source generates");
+    assert!(
+        typst.source.contains("o2p-tight-missing"),
+        "a tight multiline row must emit a selectable overflow repair"
+    );
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(
+        counts(&extracted),
+        counts(&format!("left{source}right")),
+        "fixed-row clipping must keep the hidden lines selectable once"
+    );
+}
+
+#[test]
+fn cjk_multiline_cell_in_a_tight_row_keeps_every_selectable_character() {
+    let source = (0..7)
+        .map(|index| format!("行{index}日本語の長い文章を選択できます変換後も文字を失いません"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    sheet.get_cell_mut("A1").set_value("left");
+    let cell = sheet.get_cell_mut("B1");
+    cell.set_value(&source);
+    cell.get_style_mut().get_font_mut().set_name("Calibri");
+    cell.get_style_mut().get_font_mut().set_size(11.0);
+    sheet.get_cell_mut("C1").set_value("right");
+    sheet.get_row_dimension_mut(&1).set_height(16.0);
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+    let data = workbook.into_inner();
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("workbook parses");
+    assert_eq!(
+        get_sheet_page(&document, 0).table.rows[0].height,
+        Some(16.0)
+    );
+    let font_context = crate::render::font_context::resolve_font_search_context(&[]);
+    let typst = crate::render::typst_gen::generate_typst_with_options_and_font_context(
+        &document,
+        &ConvertOptions::default(),
+        Some(&font_context),
+    )
+    .expect("Typst source generates with the production font context");
+    assert!(typst.source.contains("o2p-tight-missing"));
+    assert!(typst.source.contains("o2p-tight-repair-style.with(size:"));
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(counts(&extracted), counts(&format!("left{source}right")));
+}
+
+#[test]
+fn automatically_wrapped_cell_in_a_fixed_row_keeps_every_selectable_character() {
+    let source = (0..32)
+        .map(|index| format!("term{index} alpha beta gamma delta epsilon"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut book = umya_spreadsheet::new_file();
+    let sheet = book.get_sheet_mut(&0).expect("default sheet exists");
+    let cell = sheet.get_cell_mut("A1");
+    cell.set_value(&source);
+    cell.get_style_mut().get_font_mut().set_name("Calibri");
+    cell.get_style_mut().get_font_mut().set_size(9.0);
+    let alignment = cell.get_style_mut().get_alignment_mut();
+    alignment.set_wrap_text(true);
+    alignment.set_horizontal(umya_spreadsheet::HorizontalAlignmentValues::Justify);
+    alignment.set_vertical(umya_spreadsheet::VerticalAlignmentValues::Center);
+    sheet.get_column_dimension_mut("A").set_width(80.0);
+    sheet.get_row_dimension_mut(&1).set_height(79.35);
+    let mut workbook = Cursor::new(Vec::new());
+    umya_spreadsheet::writer::xlsx::write_writer(&book, &mut workbook).expect("workbook writes");
+    let data = workbook.into_inner();
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("workbook parses");
+    let cell = &get_sheet_page(&document, 0).table.rows[0].cells[0];
+    assert_eq!(
+        get_sheet_page(&document, 0).table.rows[0].height,
+        Some(79.0)
+    );
+    assert_eq!(cell.spill_width, None);
+    assert_eq!(cell_text(cell), source);
+
+    let font_context = crate::render::font_context::resolve_font_search_context(&[]);
+    let typst = crate::render::typst_gen::generate_typst_with_options_and_font_context(
+        &document,
+        &ConvertOptions::default(),
+        Some(&font_context),
+    )
+    .expect("Typst source generates with the production font context");
+    assert!(
+        typst.source.contains("o2p-wrap-missing"),
+        "an automatically wrapped fixed row must emit a selectable overflow repair"
+    );
+
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    assert!(result.pdf.starts_with(b"%PDF-"));
+}
+
+#[test]
+fn multiline_rich_cell_in_a_tight_row_keeps_every_selectable_character() {
+    let data = build_xlsx_bytes(
+        "Sheet1",
+        &[("A1", "left"), ("B1", "placeholder"), ("C1", "right")],
+    );
+    let data = rewrite_package_entry(&data, "xl/worksheets/sheet1.xml", |bytes| {
+        String::from_utf8(bytes)
+            .expect("worksheet is UTF-8")
+            .replacen(
+                "<row r=\"1\"",
+                "<row r=\"1\" ht=\"14\" customHeight=\"1\"",
+                1,
+            )
+            .into_bytes()
+    });
+    let data = replace_cell_with_multiline_rich_text(&data, "B1");
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("workbook parses");
+    assert_eq!(
+        cell_text(&get_sheet_page(&document, 0).table.rows[0].cells[1]),
+        "first line\nsecond large line\nlast line"
+    );
+    let typst =
+        crate::render::typst_gen::generate_typst(&document).expect("Typst source generates");
+    assert!(
+        typst.source.contains("o2p-tight-missing"),
+        "a tight rich multiline row must emit a selectable overflow repair"
+    );
+    let result = crate::convert_bytes(&data, crate::Format::Xlsx, &ConvertOptions::default())
+        .expect("workbook converts to PDF");
+    let extracted = pdf_extract::extract_text_from_mem(&result.pdf).expect("PDF text extracts");
+    let counts = |text: &str| {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .fold(
+                std::collections::BTreeMap::new(),
+                |mut counts, character| {
+                    *counts.entry(character).or_insert(0usize) += 1;
+                    counts
+                },
+            )
+    };
+    assert_eq!(
+        counts(&extracted),
+        counts("leftfirst line\nsecond large line\nlast lineright")
+    );
+}
+
+#[test]
+fn spill_page_suffix_repair_does_not_depend_on_tagging() {
+    let data = build_xlsx_bytes("Sheet1", &[("A1", "literal--spill"), ("B1", "block")]);
+    let (doc, _warnings) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("workbook parses");
+
+    let untagged =
+        crate::render::typst_gen::generate_typst_with_options(&doc, &ConvertOptions::default())
+            .expect("untagged Typst source generates");
+    assert!(untagged.source.contains("o2p-missing"));
+    assert!(untagged.source.contains("let o2p-repair-width = calc.min("));
+    assert!(untagged.source.contains("o2p-repair-width / 2"));
+    assert!(!untagged.source.contains("pdf.artifact"));
+
+    let tagged_options = ConvertOptions {
+        tagged: true,
+        ..ConvertOptions::default()
+    };
+    let tagged = crate::render::typst_gen::generate_typst_with_options(&doc, &tagged_options)
+        .expect("tagged Typst source generates");
+    assert!(tagged.source.contains("o2p-missing"));
+    assert!(!tagged.source.contains("pdf.artifact"));
+    assert!(tagged.source.contains("\"literal--spill\""));
 }
 
 #[test]

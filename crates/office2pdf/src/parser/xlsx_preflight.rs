@@ -5,16 +5,18 @@
 //! sheet names them. Executable package parts are rejected everywhere because
 //! they are an input-safety property, not a print-layout property.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{Read, Write};
 
 use quick_xml::Reader;
 use quick_xml::events::attributes::Attribute;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesStart, BytesText, Event};
 use quick_xml::name::ResolveResult;
 use quick_xml::reader::NsReader;
 
 use super::parse_cell_ref;
+use super::print_headings::column_letters;
 use super::xlsx_drawing::{
     parse_workbook_sheet_rids, resolve_relative_xl_path, sheet_part_dir, sheet_part_path,
     sheet_rels_path,
@@ -28,6 +30,8 @@ const BROWSER_PACKAGE_BOUNDS: PackageBounds = PackageBounds {
     xml_uncompressed_bytes: 16 * 1024 * 1024,
     other_entry_uncompressed_bytes: 128 * 1024 * 1024,
 };
+const MAX_XLSX_ROWS: u32 = 1_048_576;
+const MAX_XLSX_COLUMNS: u32 = 16_384;
 
 #[derive(Clone, Copy)]
 struct PackageBounds {
@@ -49,6 +53,7 @@ struct Relationship {
 struct WorksheetScan {
     drawing_rids: Vec<String>,
     dxf_ids: Vec<usize>,
+    legacy_drawing_rids: Vec<String>,
 }
 
 #[derive(Default)]
@@ -114,7 +119,544 @@ fn validate_package_bounds(data: &[u8], bounds: PackageBounds) -> Result<(), Con
 }
 
 pub(super) fn ensure_safe_package_bounds(data: &[u8]) -> Result<(), ConvertError> {
-    validate_package_bounds(data, BROWSER_PACKAGE_BOUNDS)
+    validate_package_bounds(data, BROWSER_PACKAGE_BOUNDS)?;
+    validate_upstream_parser_inputs(data)
+}
+
+const SPREADSHEETML_MAIN_NAMESPACE: &[u8] =
+    b"http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+const PACKAGE_RELATIONSHIPS_NAMESPACE: &[u8] =
+    b"http://schemas.openxmlformats.org/package/2006/relationships";
+
+fn namespace_for_upstream_entry(name: &str) -> Option<&'static [u8]> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".rels") {
+        Some(PACKAGE_RELATIONSHIPS_NAMESPACE)
+    } else if lower.ends_with(".xml") {
+        Some(SPREADSHEETML_MAIN_NAMESPACE)
+    } else {
+        None
+    }
+}
+
+fn decoded_xml_bytes(bytes: &[u8]) -> Result<Cow<'_, [u8]>, ConvertError> {
+    let encoding = if bytes.starts_with(&[0xfe, 0xff])
+        || (bytes.len() >= 2 && bytes[0] == 0 && bytes[1] == b'<')
+    {
+        Some(true)
+    } else if bytes.starts_with(&[0xff, 0xfe])
+        || (bytes.len() >= 2 && bytes[0] == b'<' && bytes[1] == 0)
+    {
+        Some(false)
+    } else {
+        None
+    };
+    let Some(big_endian) = encoding else {
+        return Ok(Cow::Borrowed(bytes));
+    };
+
+    let payload = if bytes.starts_with(&[0xfe, 0xff]) || bytes.starts_with(&[0xff, 0xfe]) {
+        &bytes[2..]
+    } else {
+        bytes
+    };
+    if payload.len() % 2 != 0 {
+        return Err(crate::parser::parse_err(
+            "Failed to decode UTF-16 XLSX XML: odd byte count",
+        ));
+    }
+    let units = payload
+        .chunks_exact(2)
+        .map(|pair| {
+            if big_endian {
+                u16::from_be_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_le_bytes([pair[0], pair[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut xml = String::from_utf16(&units).map_err(|error| {
+        crate::parser::parse_err(format!("Failed to decode UTF-16 XLSX XML: {error}"))
+    })?;
+    if xml.starts_with('\u{feff}') {
+        xml.remove(0);
+    }
+
+    if let Some(declaration_end) = xml.find("?>") {
+        let declaration = &xml[..declaration_end];
+        let lower = declaration.to_ascii_lowercase();
+        if let Some(encoding_start) = lower.find("encoding") {
+            let after_name = &xml[encoding_start + "encoding".len()..declaration_end];
+            if let Some(equals_offset) = after_name.find('=') {
+                let after_equals = encoding_start + "encoding".len() + equals_offset + 1;
+                let rest = &xml[after_equals..declaration_end];
+                if let Some(quote_offset) = rest.find(['\'', '"']) {
+                    let quote_index = after_equals + quote_offset;
+                    let quote = xml.as_bytes()[quote_index] as char;
+                    if let Some(end_offset) = xml[quote_index + 1..declaration_end].find(quote) {
+                        let value_start = quote_index + 1;
+                        let value_end = value_start + end_offset;
+                        xml.replace_range(value_start..value_end, "UTF-8");
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Cow::Owned(xml.into_bytes()))
+}
+
+fn is_ascii_whitespace(text: &BytesText<'_>) -> bool {
+    text.iter().all(u8::is_ascii_whitespace)
+}
+
+fn has_paired_empty_sheet(xml: &[u8]) -> Result<bool, ConvertError> {
+    let mut reader = Reader::from_reader(xml);
+    let mut pending_sheet = false;
+    loop {
+        let event = reader.read_event().map_err(|error| {
+            crate::parser::parse_err(format!("Failed to inspect XLSX workbook sheets: {error}"))
+        })?;
+        if pending_sheet {
+            match &event {
+                Event::End(element) if element.local_name().as_ref() == b"sheet" => {
+                    return Ok(true);
+                }
+                Event::Text(text) if is_ascii_whitespace(text) => continue,
+                Event::Comment(_) | Event::PI(_) => continue,
+                _ => pending_sheet = false,
+            }
+        }
+        match event {
+            Event::Start(element) if element.local_name().as_ref() == b"sheet" => {
+                pending_sheet = true;
+            }
+            Event::Eof => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn normalize_paired_empty_sheets(xml: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    let mut reader = Reader::from_reader(xml);
+    let mut writer = quick_xml::Writer::new(Vec::with_capacity(xml.len()));
+    let mut pending_sheet: Option<(BytesStart<'static>, Vec<Event<'static>>)> = None;
+    loop {
+        let event = reader.read_event().map_err(|error| {
+            crate::parser::parse_err(format!("Failed to normalize XLSX workbook sheets: {error}"))
+        })?;
+        if let Some((sheet, mut ignorable)) = pending_sheet.take() {
+            if matches!(&event, Event::End(element) if element.local_name().as_ref() == b"sheet") {
+                writer.write_event(Event::Empty(sheet)).map_err(|error| {
+                    crate::parser::parse_err(format!(
+                        "Failed to write normalized XLSX workbook sheet: {error}"
+                    ))
+                })?;
+                for event in ignorable {
+                    writer.write_event(event).map_err(|error| {
+                        crate::parser::parse_err(format!(
+                            "Failed to preserve XLSX workbook sheet trivia: {error}"
+                        ))
+                    })?;
+                }
+                continue;
+            }
+            if matches!(&event, Event::Text(text) if is_ascii_whitespace(text))
+                || matches!(&event, Event::Comment(_) | Event::PI(_))
+            {
+                ignorable.push(event.into_owned());
+                pending_sheet = Some((sheet, ignorable));
+                continue;
+            }
+            writer.write_event(Event::Start(sheet)).map_err(|error| {
+                crate::parser::parse_err(format!(
+                    "Failed to write normalized XLSX workbook sheet: {error}"
+                ))
+            })?;
+            for event in ignorable {
+                writer.write_event(event).map_err(|error| {
+                    crate::parser::parse_err(format!(
+                        "Failed to preserve XLSX workbook sheet content: {error}"
+                    ))
+                })?;
+            }
+        }
+        match event {
+            Event::Start(element) if element.local_name().as_ref() == b"sheet" => {
+                pending_sheet = Some((element.into_owned(), Vec::new()));
+            }
+            Event::Eof => break,
+            event => writer.write_event(event.into_owned()).map_err(|error| {
+                crate::parser::parse_err(format!(
+                    "Failed to write normalized XLSX workbook XML: {error}"
+                ))
+            })?,
+        }
+    }
+    if let Some((sheet, ignorable)) = pending_sheet {
+        writer.write_event(Event::Start(sheet)).map_err(|error| {
+            crate::parser::parse_err(format!(
+                "Failed to write normalized XLSX workbook sheet: {error}"
+            ))
+        })?;
+        for event in ignorable {
+            writer.write_event(event).map_err(|error| {
+                crate::parser::parse_err(format!(
+                    "Failed to preserve XLSX workbook sheet content: {error}"
+                ))
+            })?;
+        }
+    }
+    Ok(writer.into_inner())
+}
+
+fn is_worksheet_entry(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("xl/worksheets/") && lower.ends_with(".xml")
+}
+
+fn worksheet_has_missing_references(xml: &[u8]) -> Result<bool, ConvertError> {
+    let mut reader = Reader::from_reader(xml);
+    let mut in_sheet_data = false;
+    let mut in_row = false;
+    let mut current_row = 0u32;
+    loop {
+        let event = reader.read_event().map_err(|error| {
+            crate::parser::parse_err(format!(
+                "Failed to inspect XLSX worksheet references: {error}"
+            ))
+        })?;
+        match event {
+            Event::Start(ref element) if element.local_name().as_ref() == b"sheetData" => {
+                in_sheet_data = true;
+            }
+            Event::End(ref element) if element.local_name().as_ref() == b"sheetData" => {
+                in_sheet_data = false;
+                in_row = false;
+            }
+            Event::Start(ref element)
+                if in_sheet_data && element.local_name().as_ref() == b"row" =>
+            {
+                let Some(row) = attr_value(&reader, element, b"r")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .filter(|row| *row > 0 && *row <= MAX_XLSX_ROWS)
+                else {
+                    return Ok(true);
+                };
+                current_row = row;
+                in_row = true;
+            }
+            Event::Empty(ref element)
+                if in_sheet_data && element.local_name().as_ref() == b"row" =>
+            {
+                if attr_value(&reader, element, b"r").is_none_or(|value| {
+                    value
+                        .parse::<u32>()
+                        .ok()
+                        .is_none_or(|row| row == 0 || row > MAX_XLSX_ROWS)
+                }) {
+                    return Ok(true);
+                }
+            }
+            Event::Start(ref element) | Event::Empty(ref element)
+                if in_row && element.local_name().as_ref() == b"c" =>
+            {
+                if attr_value(&reader, element, b"r").is_none_or(|reference| {
+                    parse_cell_ref(&reference).is_none_or(|(column, row)| {
+                        column == 0
+                            || column > MAX_XLSX_COLUMNS
+                            || row == 0
+                            || row > MAX_XLSX_ROWS
+                            || row != current_row
+                    })
+                }) {
+                    return Ok(true);
+                }
+            }
+            Event::End(ref element) if element.local_name().as_ref() == b"row" => {
+                in_row = false;
+            }
+            Event::Eof => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn normalize_cell_reference(
+    reader: &Reader<&[u8]>,
+    element: &mut BytesStart<'_>,
+    current_row: u32,
+    current_column: &mut u32,
+) -> Result<(), ConvertError> {
+    if let Some(reference) = attr_value(reader, element, b"r") {
+        let (column, row) = parse_cell_ref(&reference)
+            .filter(|(column, row)| {
+                *column > 0 && *column <= MAX_XLSX_COLUMNS && *row > 0 && *row <= MAX_XLSX_ROWS
+            })
+            .ok_or_else(|| unsupported("worksheet cell reference outside XLSX bounds"))?;
+        if row != current_row {
+            return Err(unsupported(
+                "worksheet cell reference does not match its row",
+            ));
+        }
+        *current_column = column;
+    } else {
+        *current_column = current_column
+            .checked_add(1)
+            .filter(|column| *column <= MAX_XLSX_COLUMNS)
+            .ok_or_else(|| unsupported("cannot infer worksheet cell beyond XLSX bounds"))?;
+        let reference = format!("{}{}", column_letters(*current_column), current_row);
+        element.push_attribute(("r", reference.as_str()));
+    }
+    Ok(())
+}
+
+fn normalize_worksheet_references(xml: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    let mut reader = Reader::from_reader(xml);
+    let mut writer = quick_xml::Writer::new(Vec::with_capacity(xml.len()));
+    let mut in_sheet_data = false;
+    let mut in_row = false;
+    let mut last_row = 0u32;
+    let mut current_row = 0u32;
+    let mut current_column = 0u32;
+    loop {
+        let event = reader.read_event().map_err(|error| {
+            crate::parser::parse_err(format!(
+                "Failed to normalize XLSX worksheet references: {error}"
+            ))
+        })?;
+        let event = match event {
+            Event::Start(element) if element.local_name().as_ref() == b"sheetData" => {
+                in_sheet_data = true;
+                Event::Start(element.into_owned())
+            }
+            Event::End(element) if element.local_name().as_ref() == b"sheetData" => {
+                in_sheet_data = false;
+                in_row = false;
+                Event::End(element.into_owned())
+            }
+            Event::Start(mut element)
+                if in_sheet_data && element.local_name().as_ref() == b"row" =>
+            {
+                let declared = attr_value(&reader, &element, b"r");
+                current_row = match declared.as_deref() {
+                    Some(value) => value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|row| *row > 0 && *row <= MAX_XLSX_ROWS)
+                        .ok_or_else(|| {
+                            unsupported("worksheet row reference outside XLSX bounds")
+                        })?,
+                    None => last_row
+                        .checked_add(1)
+                        .filter(|row| *row <= MAX_XLSX_ROWS)
+                        .ok_or_else(|| {
+                            unsupported("cannot infer worksheet row beyond XLSX bounds")
+                        })?,
+                };
+                if declared.is_none() {
+                    let row = current_row.to_string();
+                    element.push_attribute(("r", row.as_str()));
+                }
+                last_row = current_row;
+                current_column = 0;
+                in_row = true;
+                Event::Start(element.into_owned())
+            }
+            Event::Empty(mut element)
+                if in_sheet_data && element.local_name().as_ref() == b"row" =>
+            {
+                let declared = attr_value(&reader, &element, b"r");
+                current_row = match declared.as_deref() {
+                    Some(value) => value
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|row| *row > 0 && *row <= MAX_XLSX_ROWS)
+                        .ok_or_else(|| {
+                            unsupported("worksheet row reference outside XLSX bounds")
+                        })?,
+                    None => last_row
+                        .checked_add(1)
+                        .filter(|row| *row <= MAX_XLSX_ROWS)
+                        .ok_or_else(|| {
+                            unsupported("cannot infer worksheet row beyond XLSX bounds")
+                        })?,
+                };
+                if declared.is_none() {
+                    let row = current_row.to_string();
+                    element.push_attribute(("r", row.as_str()));
+                }
+                last_row = current_row;
+                current_column = 0;
+                in_row = false;
+                Event::Empty(element.into_owned())
+            }
+            Event::Start(mut element) if in_row && element.local_name().as_ref() == b"c" => {
+                normalize_cell_reference(&reader, &mut element, current_row, &mut current_column)?;
+                Event::Start(element.into_owned())
+            }
+            Event::Empty(mut element) if in_row && element.local_name().as_ref() == b"c" => {
+                normalize_cell_reference(&reader, &mut element, current_row, &mut current_column)?;
+                Event::Empty(element.into_owned())
+            }
+            Event::End(element) if element.local_name().as_ref() == b"row" => {
+                in_row = false;
+                Event::End(element.into_owned())
+            }
+            Event::Eof => break,
+            event => event.into_owned(),
+        };
+        writer.write_event(event).map_err(|error| {
+            crate::parser::parse_err(format!(
+                "Failed to write normalized XLSX worksheet references: {error}"
+            ))
+        })?;
+    }
+    Ok(writer.into_inner())
+}
+
+fn has_prefixed_elements(xml: &[u8], namespace: &[u8]) -> Result<bool, ConvertError> {
+    let mut reader = NsReader::from_reader(xml);
+    loop {
+        let (resolved, event) = reader.read_resolved_event().map_err(|error| {
+            crate::parser::parse_err(format!("Failed to inspect XLSX namespace prefix: {error}"))
+        })?;
+        match event {
+            Event::Start(element) | Event::Empty(element) => {
+                if is_namespace(&resolved, namespace)
+                    && element.name().as_ref() != element.local_name().as_ref()
+                {
+                    return Ok(true);
+                }
+            }
+            Event::Eof => return Ok(false),
+            _ => {}
+        }
+    }
+}
+
+fn normalize_prefixed_elements(xml: &[u8], namespace: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    let mut reader = NsReader::from_reader(xml);
+    let mut writer = quick_xml::Writer::new(Vec::with_capacity(xml.len()));
+    loop {
+        let (resolved, event) = reader.read_resolved_event().map_err(|error| {
+            crate::parser::parse_err(format!(
+                "Failed to normalize XLSX namespace prefix: {error}"
+            ))
+        })?;
+        let event = match event {
+            Event::Start(mut element) if is_namespace(&resolved, namespace) => {
+                let local_name = element.local_name().as_ref().to_vec();
+                element.set_name(&local_name);
+                Event::Start(element.into_owned())
+            }
+            Event::Empty(mut element) if is_namespace(&resolved, namespace) => {
+                let local_name = element.local_name().as_ref().to_vec();
+                element.set_name(&local_name);
+                Event::Empty(element.into_owned())
+            }
+            Event::End(element) if is_namespace(&resolved, namespace) => {
+                let local_name = std::str::from_utf8(element.local_name().as_ref())
+                    .map_err(|error| {
+                        crate::parser::parse_err(format!(
+                            "Failed to decode XLSX element name: {error}"
+                        ))
+                    })?
+                    .to_string();
+                Event::End(quick_xml::events::BytesEnd::new(local_name))
+            }
+            Event::Eof => break,
+            event => event.into_owned(),
+        };
+        writer.write_event(event).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to write normalized XLSX XML: {error}"))
+        })?;
+    }
+    Ok(writer.into_inner())
+}
+
+/// Normalize namespace-qualified element names that umya-spreadsheet compares
+/// as raw names. The original package remains the source for every independent
+/// preflight.
+pub(super) fn normalize_upstream_reader_inputs(data: &[u8]) -> Result<Cow<'_, [u8]>, ConvertError> {
+    let mut archive = crate::parser::open_zip(data)?;
+    let mut requires_normalization = false;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to inspect XLSX namespace prefix: {error}"))
+        })?;
+        let Some(namespace) = namespace_for_upstream_entry(entry.name()) else {
+            continue;
+        };
+        if entry.is_dir() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to read XLSX namespace prefix: {error}"))
+        })?;
+        let decoded = decoded_xml_bytes(&bytes)?;
+        if decoded.as_ref() != bytes
+            || has_prefixed_elements(decoded.as_ref(), namespace)?
+            || (entry.name().eq_ignore_ascii_case("xl/workbook.xml")
+                && has_paired_empty_sheet(decoded.as_ref())?)
+            || (is_worksheet_entry(entry.name())
+                && worksheet_has_missing_references(decoded.as_ref())?)
+        {
+            requires_normalization = true;
+            break;
+        }
+    }
+    if !requires_normalization {
+        return Ok(Cow::Borrowed(data));
+    }
+
+    let mut archive = crate::parser::open_zip(data)?;
+    let cursor = std::io::Cursor::new(Vec::with_capacity(data.len()));
+    let mut writer = zip::ZipWriter::new(cursor);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to normalize XLSX package entry: {error}"))
+        })?;
+        let name = entry.name().to_string();
+        let options = zip::write::FileOptions::default().compression_method(entry.compression());
+        if entry.is_dir() {
+            writer.add_directory(name, options).map_err(|error| {
+                crate::parser::parse_err(format!(
+                    "Failed to normalize XLSX package directory: {error}"
+                ))
+            })?;
+            continue;
+        }
+        let namespace = namespace_for_upstream_entry(&name);
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to normalize XLSX package data: {error}"))
+        })?;
+        if let Some(namespace) = namespace {
+            let decoded = decoded_xml_bytes(&bytes)?;
+            bytes = decoded.into_owned();
+            if has_prefixed_elements(&bytes, namespace)? {
+                bytes = normalize_prefixed_elements(&bytes, namespace)?;
+            }
+            if name.eq_ignore_ascii_case("xl/workbook.xml") && has_paired_empty_sheet(&bytes)? {
+                bytes = normalize_paired_empty_sheets(&bytes)?;
+            }
+            if is_worksheet_entry(&name) && worksheet_has_missing_references(&bytes)? {
+                bytes = normalize_worksheet_references(&bytes)?;
+            }
+        }
+        writer.start_file(name, options).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to normalize XLSX package file: {error}"))
+        })?;
+        writer.write_all(&bytes).map_err(|error| {
+            crate::parser::parse_err(format!("Failed to write normalized XLSX package: {error}"))
+        })?;
+    }
+    let normalized = writer.finish().map_err(|error| {
+        crate::parser::parse_err(format!("Failed to finish normalized XLSX package: {error}"))
+    })?;
+    Ok(Cow::Owned(normalized.into_inner()))
 }
 
 fn attr_value(reader: &Reader<&[u8]>, element: &BytesStart<'_>, name: &[u8]) -> Option<String> {
@@ -434,11 +976,16 @@ fn read_xml(
     let mut entry = archive.by_name(&actual_path).map_err(|error| {
         crate::parser::parse_err(format!("Failed to open XLSX part {actual_path}: {error}"))
     })?;
-    let mut xml = String::new();
-    entry.read_to_string(&mut xml).map_err(|error| {
+    let mut bytes = Vec::new();
+    entry.read_to_end(&mut bytes).map_err(|error| {
         crate::parser::parse_err(format!("Failed to read XLSX part {path}: {error}"))
     })?;
-    Ok(Some(xml))
+    let decoded = decoded_xml_bytes(&bytes)?;
+    String::from_utf8(decoded.into_owned())
+        .map(Some)
+        .map_err(|error| {
+            crate::parser::parse_err(format!("Failed to read XLSX part {path}: {error}"))
+        })
 }
 
 fn relationships(xml: &str) -> Result<HashMap<String, Relationship>, ConvertError> {
@@ -479,6 +1026,242 @@ fn relationships(xml: &str) -> Result<HashMap<String, Relationship>, ConvertErro
     Ok(result)
 }
 
+fn validate_upstream_comments(xml: &str) -> Result<(), ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    let mut author_count = 0usize;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Empty(element)) if element.name().as_ref() == b"author" => {
+                author_count += 1;
+            }
+            Ok(Event::End(element)) if element.name().as_ref() == b"author" => {
+                author_count += 1;
+            }
+            Ok(Event::Start(element)) if element.name().as_ref() == b"comment" => {
+                let author_id = attr_value(&reader, &element, b"authorId")
+                    .and_then(|value| value.parse::<usize>().ok());
+                if attr_value(&reader, &element, b"ref").is_none()
+                    || author_id.is_none_or(|author_id| author_id >= author_count)
+                {
+                    return Err(unsupported("invalid comment author"));
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to validate XLSX comments: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_upstream_chart(xml: &str) -> Result<(), ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref element) | Event::Empty(ref element))
+                if element.local_name().as_ref() == b"symbol"
+                    && attr_value(&reader, element, b"val").is_none() =>
+            {
+                return Err(unsupported("chart marker symbol missing value"));
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to validate XLSX chart input: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_upstream_chartsheet(xml: &str) -> Result<(), ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref element) | Event::Empty(ref element))
+                if element.local_name().as_ref() == b"pageSetup"
+                    && attr_value(&reader, element, b"id").is_some() =>
+            {
+                return Err(unsupported("chartsheet printer settings"));
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to validate XLSX chartsheet input: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn worksheet_printer_settings_rids(xml: &str) -> Result<Vec<String>, ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    let mut result = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref element) | Event::Empty(ref element))
+                if element.local_name().as_ref() == b"pageSetup" =>
+            {
+                if let Some(rid) = element
+                    .attributes()
+                    .flatten()
+                    .find(|attribute| attribute.key.as_ref() == b"r:id")
+                    .and_then(|attribute| {
+                        attribute
+                            .decode_and_unescape_value(reader.decoder())
+                            .ok()
+                            .map(|value| value.into_owned())
+                    })
+                {
+                    result.push(rid);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to validate XLSX worksheet printer settings: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(result)
+}
+
+fn validate_upstream_vml(xml: &str) -> Result<(), ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref element) | Event::Empty(ref element))
+                if element.local_name().as_ref() == b"fill"
+                    && attr_value(&reader, element, b"relid").is_some()
+                    && attr_value(&reader, element, b"title").is_none() =>
+            {
+                return Err(unsupported("VML image fill missing title"));
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to validate XLSX VML input: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn vml_has_visible_note(xml: &str) -> Result<bool, ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    let mut in_note = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref element)) if element.local_name().as_ref() == b"ClientData" => {
+                in_note = attr_value(&reader, element, b"ObjectType").as_deref() == Some("Note");
+            }
+            Ok(Event::Empty(ref element))
+                if in_note && element.local_name().as_ref() == b"Visible" =>
+            {
+                return Ok(true);
+            }
+            Ok(Event::Start(ref element))
+                if in_note && element.local_name().as_ref() == b"Visible" =>
+            {
+                let name = element.name().to_owned();
+                let value = reader
+                    .read_text(quick_xml::name::QName(name.as_ref()))
+                    .map_err(|error| {
+                        crate::parser::parse_err(format!(
+                            "Failed to inspect XLSX VML note visibility: {error}"
+                        ))
+                    })?;
+                let value = value.trim();
+                if !value.eq_ignore_ascii_case("false") && !value.eq_ignore_ascii_case("f") {
+                    return Ok(true);
+                }
+            }
+            Ok(Event::End(ref element)) if element.local_name().as_ref() == b"ClientData" => {
+                in_note = false;
+            }
+            Ok(Event::Eof) => return Ok(false),
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to inspect XLSX VML note visibility: {error}"
+                )));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_upstream_parser_inputs(data: &[u8]) -> Result<(), ConvertError> {
+    let mut archive = crate::parser::open_zip(data)?;
+    let names: Vec<String> = (0..archive.len())
+        .filter_map(|index| {
+            archive
+                .by_index(index)
+                .ok()
+                .map(|entry| entry.name().to_string())
+        })
+        .collect();
+
+    for name in names {
+        let lower = name.trim_start_matches('/').to_ascii_lowercase();
+        let relevant = (lower.starts_with("xl/drawings/_rels/") && lower.ends_with(".rels"))
+            || (lower.starts_with("xl/charts/") && lower.ends_with(".xml"))
+            || (lower.starts_with("xl/chartsheets/") && lower.ends_with(".xml"))
+            || (lower.starts_with("xl/comments") && lower.ends_with(".xml"))
+            || (lower.starts_with("xl/drawings/") && lower.ends_with(".vml"))
+            || (lower.starts_with("xl/worksheets/") && lower.ends_with(".xml"));
+        if !relevant {
+            continue;
+        }
+        let Some(xml) = read_xml(&mut archive, &name)? else {
+            continue;
+        };
+        if lower.starts_with("xl/drawings/_rels/") && lower.ends_with(".rels") {
+            if relationships(&xml)?
+                .values()
+                .any(|relationship| relationship.external && relationship.kind.ends_with("/image"))
+            {
+                return Err(unsupported("external drawing image"));
+            }
+        } else if lower.starts_with("xl/charts/") && lower.ends_with(".xml") {
+            validate_upstream_chart(&xml)?;
+        } else if lower.starts_with("xl/chartsheets/") && lower.ends_with(".xml") {
+            validate_upstream_chartsheet(&xml)?;
+        } else if lower.starts_with("xl/worksheets/") && lower.ends_with(".xml") {
+            let printer_settings_rids = worksheet_printer_settings_rids(&xml)?;
+            if !printer_settings_rids.is_empty() {
+                let rels_path = part_rels_path(name.trim_start_matches('/'));
+                let rels = read_xml(&mut archive, &rels_path)?
+                    .map(|xml| relationships(&xml))
+                    .transpose()?
+                    .unwrap_or_default();
+                if printer_settings_rids
+                    .iter()
+                    .any(|rid| !rels.contains_key(rid))
+                {
+                    return Err(unsupported("unresolved worksheet printer settings"));
+                }
+            }
+        } else if lower.starts_with("xl/comments") && lower.ends_with(".xml") {
+            validate_upstream_comments(&xml)?;
+        } else if lower.starts_with("xl/drawings/") && lower.ends_with(".vml") {
+            validate_upstream_vml(&xml)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_worksheet(
     xml: &str,
     sheet_name: &str,
@@ -510,12 +1293,30 @@ fn validate_worksheet(
     let mut current_rule_container_seen = false;
     let mut seen_priorities = HashSet::new();
     let mut conditional_format_groups: Vec<Vec<PreflightRange>> = Vec::new();
+    let mut in_cell = false;
+    let mut cell_has_formula = false;
+    let mut cell_has_cached_value = false;
     loop {
         let (namespace, event) = reader.read_resolved_event().map_err(|error| {
             crate::parser::parse_err(format!("Failed to parse worksheet {sheet_name}: {error}"))
         })?;
         let is_main = is_main_namespace(&namespace);
         match event {
+            Event::Start(ref element) if is_main && element.local_name().as_ref() == b"c" => {
+                in_cell = true;
+                cell_has_formula = false;
+                cell_has_cached_value = false;
+            }
+            Event::Start(ref element) | Event::Empty(ref element)
+                if is_main && in_cell && element.local_name().as_ref() == b"f" =>
+            {
+                cell_has_formula = true;
+            }
+            Event::Start(ref element) | Event::Empty(ref element)
+                if is_main && in_cell && element.local_name().as_ref() == b"v" =>
+            {
+                cell_has_cached_value = true;
+            }
             Event::Start(ref element)
                 if is_main && element.local_name().as_ref() == b"conditionalFormatting" =>
             {
@@ -686,6 +1487,11 @@ fn validate_worksheet(
                             scan.drawing_rids.push(rid);
                         }
                     }
+                    b"legacyDrawing" if is_main => {
+                        if let Some(rid) = attr_value(&reader, element, b"id") {
+                            scan.legacy_drawing_rids.push(rid);
+                        }
+                    }
                     b"control" if is_main => control_prints = Some(true),
                     b"controlPr" if is_main && control_prints.is_some() => {
                         if false_value(attr_value(&reader, element, b"print")) {
@@ -811,6 +1617,14 @@ fn validate_worksheet(
                         "printable form control on sheet: {sheet_name}"
                     )));
                 }
+            }
+            Event::End(element) if is_main && element.local_name().as_ref() == b"c" => {
+                if in_cell && cell_has_formula && !cell_has_cached_value {
+                    return Err(unsupported(format!(
+                        "formula without cached value on printed sheet: {sheet_name}"
+                    )));
+                }
+                in_cell = false;
             }
             Event::End(element) if is_main && element.local_name().as_ref() == b"cfRule" => {
                 match current_rule_kind.take().as_deref() {
@@ -1150,6 +1964,71 @@ mod tests {
     }
 
     #[test]
+    fn upstream_parser_safety_refuses_known_panic_shapes() {
+        for (part, xml, expected) in [
+            (
+                "xl/drawings/_rels/drawing1.xml.rels",
+                r#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.test/image.png" TargetMode="External"/></Relationships>"#,
+                "external drawing image",
+            ),
+            (
+                "xl/charts/chart1.xml",
+                r#"<c:chartSpace xmlns:c="urn:c"><c:symbol/></c:chartSpace>"#,
+                "chart marker symbol missing value",
+            ),
+            (
+                "xl/chartsheets/sheet1.xml",
+                r#"<chartsheet xmlns:r="urn:r"><pageSetup r:id="rId1"/></chartsheet>"#,
+                "chartsheet printer settings",
+            ),
+            (
+                "xl/comments1.xml",
+                r#"<comments xmlns:d="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><authors><d:author>Author</d:author></authors><commentList><comment ref="A1" authorId="0"><text/></comment></commentList></comments>"#,
+                "invalid comment author",
+            ),
+            (
+                "xl/drawings/vmlDrawing1.vml",
+                r#"<xml xmlns:o="urn:o"><fill o:relid="rId1"/></xml>"#,
+                "VML image fill missing title",
+            ),
+        ] {
+            let package = zip_entries(&[(part, xml.as_bytes())]);
+            let error = match ensure_safe_package_bounds(&package) {
+                Ok(()) => panic!("{part} must refuse before the upstream parser"),
+                Err(error) => error,
+            };
+            assert_unsupported(error, expected);
+        }
+    }
+
+    #[test]
+    fn upstream_parser_safety_keeps_supported_counterparts() {
+        let package = zip_entries(&[
+            (
+                "xl/drawings/_rels/drawing1.xml.rels",
+                br#"<Relationships><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image.png"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.test/" TargetMode="External"/></Relationships>"#,
+            ),
+            (
+                "xl/charts/chart1.xml",
+                br#"<c:chartSpace xmlns:c="urn:c"><c:symbol val="circle"/></c:chartSpace>"#,
+            ),
+            (
+                "xl/chartsheets/sheet1.xml",
+                br#"<chartsheet><pageSetup orientation="landscape"/></chartsheet>"#,
+            ),
+            (
+                "xl/comments1.xml",
+                br#"<comments><authors><author>Author</author></authors><commentList><comment ref="A1" authorId="0"/></commentList></comments>"#,
+            ),
+            (
+                "xl/drawings/vmlDrawing1.vml",
+                br#"<xml xmlns:o="urn:o"><fill o:relid="rId1" o:title="image.png"/></xml>"#,
+            ),
+        ]);
+        ensure_safe_package_bounds(&package).expect("supported parser inputs must remain accepted");
+    }
+
+    #[test]
     fn differential_style_preflight_admits_only_properties_the_renderer_applies() {
         let supported = r#"<styleSheet><dxfs count="1"><dxf><font><name val="Arial"/><sz val="14"/><b/><i/><u val="single"/><strike/><color rgb="FF9C0006"/></font><fill><patternFill patternType="solid"><bgColor rgb="FFFFC7CE"/></patternFill></fill></dxf></dxfs></styleSheet>"#;
         validate_differential_styles(supported, &HashSet::from([0]))
@@ -1194,6 +2073,20 @@ mod tests {
                 .expect_err("a printable control is not drawn"),
             "printable form control on sheet: Budget",
         );
+    }
+
+    #[test]
+    fn worksheet_refuses_a_formula_without_a_cached_value() {
+        let uncached = r#"<worksheet><sheetData><row r="1"><c r="A1"><f>1+1</f></c></row></sheetData></worksheet>"#;
+        assert_unsupported(
+            validate_worksheet(uncached, "Budget", &HashMap::new())
+                .expect_err("the renderer cannot calculate a missing formula result"),
+            "formula without cached value on printed sheet: Budget",
+        );
+
+        let cached_empty = r#"<worksheet><sheetData><row r="1"><c r="A1"><f>IF(TRUE,&quot;&quot;,&quot;x&quot;)</f><v></v></c></row></sheetData></worksheet>"#;
+        validate_worksheet(cached_empty, "Budget", &HashMap::new())
+            .expect("an explicitly cached empty formula result is known");
     }
 
     #[test]
@@ -2074,6 +2967,88 @@ mod tests {
                 expected,
             );
         }
+    }
+
+    #[test]
+    fn printed_dialog_sheet_refuses_before_rendering() {
+        let package = zip_entries(&[
+            (
+                "xl/workbook.xml",
+                br#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Dialog" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/dialogsheet" Target="dialogsheets/sheet1.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/dialogsheets/sheet1.xml",
+                br#"<dialogsheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>"#,
+            ),
+        ]);
+        assert_unsupported(
+            ensure_supported_package(&package, &HashSet::from(["Dialog".to_string()]))
+                .expect_err("the renderer does not draw dialog sheets"),
+            "dialog sheet selected for printing: Dialog",
+        );
+    }
+
+    #[test]
+    fn visible_note_linked_from_a_printed_sheet_refuses() {
+        let package = zip_entries(&[
+            (
+                "xl/workbook.xml",
+                br#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><legacyDrawing r:id="rIdNote"/></worksheet>"#,
+            ),
+            (
+                "xl/worksheets/_rels/sheet1.xml.rels",
+                br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdNote" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/></Relationships>"#,
+            ),
+            (
+                "xl/drawings/vmlDrawing1.vml",
+                br#"<xml xmlns:x="urn:schemas-microsoft-com:office:excel"><x:ClientData ObjectType="Note"><x:Row>0</x:Row><x:Column>0</x:Column><x:Visible/></x:ClientData></xml>"#,
+            ),
+        ]);
+        assert_unsupported(
+            ensure_supported_package(&package, &HashSet::from(["Budget".to_string()]))
+                .expect_err("a visible note is part of the printed result"),
+            "visible cell comment on sheet: Budget",
+        );
+
+        ensure_supported_package(&package, &HashSet::new())
+            .expect("a note on a sheet that is not selected cannot affect the PDF");
+
+        let hidden_package = zip_entries(&[
+            (
+                "xl/workbook.xml",
+                br#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><legacyDrawing r:id="rIdNote"/></worksheet>"#,
+            ),
+            (
+                "xl/worksheets/_rels/sheet1.xml.rels",
+                br#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdNote" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"/></Relationships>"#,
+            ),
+            (
+                "xl/drawings/vmlDrawing1.vml",
+                br#"<xml xmlns:x="urn:schemas-microsoft-com:office:excel"><x:ClientData ObjectType="Note"><x:Visible>False</x:Visible></x:ClientData></xml>"#,
+            ),
+        ]);
+        ensure_supported_package(&hidden_package, &HashSet::from(["Budget".to_string()]))
+            .expect("an explicit false visibility value leaves the note hidden");
     }
 }
 
@@ -4668,6 +5643,11 @@ pub(super) fn ensure_supported_package(
                 "external printed sheet relationship: {sheet_name}"
             )));
         }
+        if sheet_relationship.kind.ends_with("/dialogsheet") {
+            return Err(unsupported(format!(
+                "dialog sheet selected for printing: {sheet_name}"
+            )));
+        }
         let sheet_path = sheet_part_path(&sheet_relationship.target);
         let Some(sheet_xml) = read_xml(&mut archive, &sheet_path)? else {
             return Err(unsupported(format!(
@@ -4680,6 +5660,7 @@ pub(super) fn ensure_supported_package(
             sheet_name,
             sheet_relationship.target.clone(),
             sheet_scan.drawing_rids,
+            sheet_scan.legacy_drawing_rids,
         ));
     }
 
@@ -4702,8 +5683,8 @@ pub(super) fn ensure_supported_package(
         validate_differential_styles(&styles_xml, &used_dxf_ids)?;
     }
 
-    for (sheet_name, sheet_target, drawing_rids) in printable_drawings {
-        if drawing_rids.is_empty() {
+    for (sheet_name, sheet_target, drawing_rids, legacy_drawing_rids) in printable_drawings {
+        if drawing_rids.is_empty() && legacy_drawing_rids.is_empty() {
             continue;
         }
         let rels_path = sheet_rels_path(&sheet_target);
@@ -4713,6 +5694,32 @@ pub(super) fn ensure_supported_package(
             )));
         };
         let sheet_rels = relationships(&sheet_rels_xml)?;
+        for legacy_drawing_rid in legacy_drawing_rids {
+            let Some(legacy_relationship) = sheet_rels.get(&legacy_drawing_rid) else {
+                return Err(unsupported(format!(
+                    "unresolved legacy drawing relationship on sheet: {sheet_name}"
+                )));
+            };
+            if legacy_relationship.external || !legacy_relationship.kind.ends_with("/vmlDrawing") {
+                return Err(unsupported(format!(
+                    "unsupported legacy drawing relationship on sheet: {sheet_name}"
+                )));
+            }
+            let vml_path = resolve_relative_xl_path(
+                &sheet_part_dir(&sheet_target),
+                &legacy_relationship.target,
+            );
+            let Some(vml_xml) = read_xml(&mut archive, &vml_path)? else {
+                return Err(unsupported(format!(
+                    "missing legacy drawing part on sheet: {sheet_name}"
+                )));
+            };
+            if vml_has_visible_note(&vml_xml)? {
+                return Err(unsupported(format!(
+                    "visible cell comment on sheet: {sheet_name}"
+                )));
+            }
+        }
         for drawing_rid in drawing_rids {
             let Some(drawing_relationship) = sheet_rels.get(&drawing_rid) else {
                 return Err(unsupported(format!(

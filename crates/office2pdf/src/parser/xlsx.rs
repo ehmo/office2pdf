@@ -728,7 +728,8 @@ impl XlsxParser {
         chunk_size: usize,
     ) -> Result<(Vec<Document>, Vec<ConvertWarning>), ConvertError> {
         preflight::ensure_safe_package_bounds(data)?;
-        let cursor = Cursor::new(data);
+        let upstream_data = preflight::normalize_upstream_reader_inputs(data)?;
+        let cursor = Cursor::new(upstream_data.as_ref());
         let book = umya_spreadsheet::reader::xlsx::read_reader(cursor, true).map_err(|e| {
             crate::parser::parse_err(format!("Failed to parse XLSX (umya-spreadsheet): {e}"))
         })?;
@@ -1066,7 +1067,8 @@ impl Parser for XlsxParser {
         options: &ConvertOptions,
     ) -> Result<(Document, Vec<ConvertWarning>), ConvertError> {
         preflight::ensure_safe_package_bounds(data)?;
-        let cursor = Cursor::new(data);
+        let upstream_data = preflight::normalize_upstream_reader_inputs(data)?;
+        let cursor = Cursor::new(upstream_data.as_ref());
         let book = umya_spreadsheet::reader::xlsx::read_reader(cursor, true).map_err(|e| {
             crate::parser::parse_err(format!("Failed to parse XLSX (umya-spreadsheet): {e}"))
         })?;

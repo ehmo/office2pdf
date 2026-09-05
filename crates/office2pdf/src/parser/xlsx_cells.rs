@@ -22,11 +22,21 @@ const MAX_XLSX_COLUMNS: u32 = 16384;
 /// Keep this narrow compatibility layer until a released dependency carries
 /// the complete behavior (issue #1262).
 fn formatted_cell_value(cell: &umya_spreadsheet::Cell) -> String {
-    if cell.get_value_number().is_some_and(|value| value == 0.0)
+    if let Some(value) = cell.get_value_number()
         && let Some(number_format) = cell.get_style().get_number_format()
-        && let Some(literal) = literal_zero_section_text(number_format.get_format_code())
     {
-        return literal;
+        if value == 0.0
+            && let Some(literal) = literal_zero_section_text(number_format.get_format_code())
+        {
+            return literal;
+        }
+        if (!(0.0..2_958_466.0).contains(&value) || !value.is_finite())
+            && umya_spreadsheet::helper::number_format::DATE_TIME_REGEX
+                .is_match(number_format.get_format_code())
+                .unwrap_or(false)
+        {
+            return cell.get_value().into_owned();
+        }
     }
     cell.get_formatted_value()
 }
@@ -622,7 +632,9 @@ pub(super) fn parse_column_letters(s: &str) -> Option<u32> {
         if !c.is_ascii_uppercase() {
             return None;
         }
-        col = col * 26 + (c as u32 - b'A' as u32 + 1);
+        col = col
+            .checked_mul(26)?
+            .checked_add(c as u32 - b'A' as u32 + 1)?;
     }
     Some(col)
 }

@@ -695,6 +695,12 @@ fn test_escape_typst_keeps_double_hyphens() {
 }
 
 #[test]
+fn test_escape_typst_keeps_three_periods() {
+    // Typst turns three markup periods into one ellipsis character.
+    assert_eq!(escape_typst("wait...done"), "wait\\...done");
+}
+
+#[test]
 fn test_escape_typst_keeps_hyphen_before_digits() {
     // A hyphen before digits becomes a Unicode minus (−18%) in markup.
     let result = escape_typst("blended CAC, -18%");

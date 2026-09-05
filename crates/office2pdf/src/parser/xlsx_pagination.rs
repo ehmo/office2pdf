@@ -832,11 +832,10 @@ fn page_column_groups(
     let title_width: f64 = title_columns
         .map(|(start, end)| column_widths[start..end].iter().sum())
         .unwrap_or(0.0);
-    let widest_column: f64 = column_widths.iter().copied().fold(0.0, f64::max);
     let groups = column_groups(
         column_widths,
-        printable_width.max(widest_column),
-        (printable_width - title_width).max(widest_column),
+        printable_width,
+        printable_width - title_width,
     );
     (groups, title_width)
 }
