@@ -11,12 +11,57 @@ use crate::parser::xml_util;
 #[derive(Default)]
 pub(crate) struct CondFmtOverride {
     pub background: Option<Color>,
+    pub font_family: Option<String>,
+    pub font_size: Option<f64>,
     pub font_color: Option<Color>,
     pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
     pub data_bar: Option<DataBarInfo>,
     pub icon_text: Option<String>,
     pub icon_color: Option<Color>,
     pub icon_shading: Option<IconShading>,
+}
+
+impl CondFmtOverride {
+    fn has_cell_style(&self) -> bool {
+        self.background.is_some()
+            || self.font_family.is_some()
+            || self.font_size.is_some()
+            || self.font_color.is_some()
+            || self.bold.is_some()
+            || self.italic.is_some()
+            || self.underline.is_some()
+            || self.strikethrough.is_some()
+    }
+
+    fn apply_cell_style(&mut self, style: &Self) {
+        if style.background.is_some() {
+            self.background = style.background;
+        }
+        if style.font_family.is_some() {
+            self.font_family.clone_from(&style.font_family);
+        }
+        if style.font_size.is_some() {
+            self.font_size = style.font_size;
+        }
+        if style.font_color.is_some() {
+            self.font_color = style.font_color;
+        }
+        if style.bold.is_some() {
+            self.bold = style.bold;
+        }
+        if style.italic.is_some() {
+            self.italic = style.italic;
+        }
+        if style.underline.is_some() {
+            self.underline = style.underline;
+        }
+        if style.strikethrough.is_some() {
+            self.strikethrough = style.strikethrough;
+        }
+    }
 }
 
 /// Parse an sqref string (e.g., "A1:C10" or "A1") into a list of CellRanges.
@@ -174,8 +219,28 @@ fn extract_cond_fmt_style(
                 .and_then(|color| resolve_style_color(color, theme))
         });
         if let Some(font) = style.get_font() {
+            let family = font.get_name();
+            if !family.is_empty() {
+                result.font_family = Some(family.to_string());
+            }
+            let size = *font.get_size();
+            if size.is_finite() && size > 0.0 {
+                result.font_size = Some(size);
+            }
             if *font.get_bold() {
                 result.bold = Some(true);
+            }
+            if *font.get_italic() {
+                result.italic = Some(true);
+            }
+            if !matches!(
+                font.get_font_underline().get_val(),
+                umya_spreadsheet::UnderlineValues::None
+            ) {
+                result.underline = Some(true);
+            }
+            if *font.get_strikethrough() {
+                result.strikethrough = Some(true);
             }
             let color_argb = font.get_color().get_argb();
             if !color_argb.is_empty() && color_argb != "FF000000" {
@@ -254,6 +319,7 @@ fn apply_text_rule(
     if needle.is_empty() {
         return;
     }
+    let needle_folded: String = needle.to_lowercase();
     let fmt = extract_cond_fmt_style(rule, theme);
 
     for range in ranges {
@@ -262,25 +328,19 @@ fn apply_text_rule(
                 let Some(cell) = sheet.get_cell((col, row)) else {
                     continue;
                 };
-                let value = cell.get_formatted_value();
+                let value_folded: String = cell.get_formatted_value().to_lowercase();
                 let matched = match rule.get_type() {
-                    ConditionalFormatValues::ContainsText => value.contains(needle),
-                    ConditionalFormatValues::NotContainsText => !value.contains(needle),
-                    ConditionalFormatValues::BeginsWith => value.starts_with(needle),
-                    ConditionalFormatValues::EndsWith => value.ends_with(needle),
+                    ConditionalFormatValues::ContainsText => value_folded.contains(&needle_folded),
+                    ConditionalFormatValues::NotContainsText => {
+                        !value_folded.contains(&needle_folded)
+                    }
+                    ConditionalFormatValues::BeginsWith => value_folded.starts_with(&needle_folded),
+                    ConditionalFormatValues::EndsWith => value_folded.ends_with(&needle_folded),
                     _ => false,
                 };
                 if matched {
                     let entry = overrides.entry((col, row)).or_default();
-                    if fmt.background.is_some() {
-                        entry.background = fmt.background;
-                    }
-                    if fmt.font_color.is_some() {
-                        entry.font_color = fmt.font_color;
-                    }
-                    if fmt.bold.is_some() {
-                        entry.bold = fmt.bold;
-                    }
+                    entry.apply_cell_style(&fmt);
                 }
             }
         }
@@ -314,15 +374,7 @@ fn apply_cell_is_rule(
                 };
                 if matched {
                     let entry = overrides.entry((col, row)).or_default();
-                    if fmt.background.is_some() {
-                        entry.background = fmt.background;
-                    }
-                    if fmt.font_color.is_some() {
-                        entry.font_color = fmt.font_color;
-                    }
-                    if fmt.bold.is_some() {
-                        entry.bold = fmt.bold;
-                    }
+                    entry.apply_cell_style(&fmt);
                 }
             }
         }
@@ -943,7 +995,7 @@ fn apply_expression_rule(
         return;
     };
     let fmt = extract_cond_fmt_style(rule, theme);
-    if fmt.background.is_none() && fmt.font_color.is_none() && fmt.bold.is_none() {
+    if !fmt.has_cell_style() {
         return;
     }
     let value_at = |column: u32, row: u32| -> xlsx_formula::Value {
@@ -973,15 +1025,7 @@ fn apply_expression_rule(
                     continue;
                 }
                 let entry = overrides.entry((col, row)).or_default();
-                if fmt.background.is_some() {
-                    entry.background = fmt.background;
-                }
-                if fmt.font_color.is_some() {
-                    entry.font_color = fmt.font_color;
-                }
-                if fmt.bold.is_some() {
-                    entry.bold = fmt.bold;
-                }
+                entry.apply_cell_style(&fmt);
             }
         }
     }

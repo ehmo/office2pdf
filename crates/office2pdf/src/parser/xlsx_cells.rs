@@ -2370,11 +2370,26 @@ pub(super) fn build_rows_for_range(
                 if ovr.background.is_some() {
                     background = ovr.background;
                 }
+                if ovr.font_family.is_some() {
+                    text_style.font_family.clone_from(&ovr.font_family);
+                }
+                if ovr.font_size.is_some() {
+                    text_style.font_size = ovr.font_size;
+                }
                 if ovr.font_color.is_some() {
                     text_style.color = ovr.font_color;
                 }
                 if let Some(bold) = ovr.bold {
                     text_style.bold = Some(bold);
+                }
+                if let Some(italic) = ovr.italic {
+                    text_style.italic = Some(italic);
+                }
+                if let Some(underline) = ovr.underline {
+                    text_style.underline = Some(underline);
+                }
+                if let Some(strikethrough) = ovr.strikethrough {
+                    text_style.strikethrough = Some(strikethrough);
                 }
                 data_bar = ovr.data_bar.clone();
                 icon_text = ovr.icon_text.clone();

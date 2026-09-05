@@ -828,14 +828,14 @@ fn test_parse_invalid_data_returns_error() {
 }
 
 #[test]
-fn test_parse_error_includes_library_name() {
+fn test_parse_error_identifies_the_failed_zip_stage() {
     let parser = XlsxParser;
     let result = parser.parse(b"not an xlsx file", &ConvertOptions::default());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("umya-spreadsheet"),
-        "Parse error should include upstream library name 'umya-spreadsheet', got: {msg}"
+        msg.contains("ZIP archive"),
+        "the package safety preflight should identify its failed ZIP stage, got: {msg}"
     );
 }
 
@@ -1122,43 +1122,115 @@ fn splice_picture_drawing(data: &[u8], media: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn malformed_raster_image_is_omitted_with_warning_and_workbook_still_converts() {
+fn malformed_raster_image_refuses_before_rendering() {
     let workbook = build_xlsx_bytes("Sheet1", &[("A1", "survives")]);
     let data = splice_picture_drawing(&workbook, b"not a png");
 
-    let (doc, warnings) = XlsxParser
+    let error = XlsxParser
         .parse(&data, &ConvertOptions::default())
-        .expect("a malformed picture must not abort XLSX parsing");
-    let page = get_sheet_page(&doc, 0);
-    assert!(
-        page.images.is_empty(),
-        "the malformed picture must not reach the renderer"
-    );
-    assert!(
-        warnings.iter().any(|warning| matches!(
-            warning,
-            ConvertWarning::UnsupportedElement { format, element }
-                if format == "XLSX"
-                    && element.contains("image omitted")
-                    && element.contains("xl/media/image1.png")
-        )),
-        "expected an omission warning naming the malformed media part, got {warnings:?}"
+        .expect_err("a malformed picture must refuse before rendering");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "unrenderable image: xl/media/image1.png"
+    ));
+
+    let error = XlsxParser
+        .parse_streaming(&data, &ConvertOptions::default(), 1)
+        .expect_err("streaming must apply the same image refusal");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "unrenderable image: xl/media/image1.png"
+    ));
+}
+
+#[test]
+fn printed_sheet_sparklines_refuse_in_batch_and_streaming() {
+    let workbook = build_xlsx_bytes("Sheet1", &[("A1", "survives")]);
+    let data = inject_before_worksheet_close(
+        &workbook,
+        r#"<extLst><ext uri="sparkline-probe"><x14:sparklineGroups xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroup><x14:sparklines><x14:sparkline><xm:f xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">Sheet1!A1</xm:f><xm:sqref xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">B1</xm:sqref></x14:sparkline></x14:sparklines></x14:sparklineGroup></x14:sparklineGroups></ext></extLst>"#,
     );
 
-    let result = crate::convert_bytes(
-        &data,
-        crate::config::Format::Xlsx,
-        &ConvertOptions::default(),
-    )
-    .expect("the workbook must still produce a PDF");
-    assert!(result.pdf.starts_with(b"%PDF-"));
-    assert!(result.warnings.iter().any(|warning| matches!(
-        warning,
-        ConvertWarning::UnsupportedElement { format, element }
-            if format == "XLSX"
-                && element.contains("image omitted")
-                && element.contains("xl/media/image1.png")
-    )));
+    for error in [
+        XlsxParser
+            .parse(&data, &ConvertOptions::default())
+            .expect_err("batch parsing must refuse a printed sparkline"),
+        XlsxParser
+            .parse_streaming(&data, &ConvertOptions::default(), 1)
+            .expect_err("streaming must refuse a printed sparkline"),
+    ] {
+        assert!(matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == "sparklines on printed sheet: Sheet1"
+        ));
+    }
+}
+
+fn inject_into_worksheet_part(xlsx: &[u8], part: &str, insertion: &str) -> Vec<u8> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(xlsx)).expect("readable workbook");
+    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let mut changed = false;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).expect("readable entry");
+        let name = entry.name().to_string();
+        let mut contents = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut contents).expect("readable entry body");
+        if name == part {
+            let xml = String::from_utf8(contents).expect("worksheet is UTF-8");
+            contents = xml
+                .replace("</worksheet>", &format!("{insertion}</worksheet>"))
+                .into_bytes();
+            changed = true;
+        }
+        writer
+            .start_file(name, zip::write::FileOptions::default())
+            .expect("writable entry");
+        std::io::Write::write_all(&mut writer, &contents).expect("writable entry body");
+    }
+    assert!(changed, "{part} must exist");
+    writer.finish().expect("package closes").into_inner()
+}
+
+#[test]
+fn hidden_sheet_preflight_follows_the_actual_print_selection() {
+    let workbook = build_xlsx_multi_sheet_with_states(&[
+        (
+            "Visible",
+            umya_spreadsheet::SheetStateValues::Visible,
+            &[("A1", "visible")],
+        ),
+        (
+            "Hidden",
+            umya_spreadsheet::SheetStateValues::Hidden,
+            &[("A1", "hidden")],
+        ),
+    ]);
+    let data = inject_into_worksheet_part(
+        &workbook,
+        "xl/worksheets/sheet2.xml",
+        r#"<extLst><ext uri="sparkline-probe"><x14:sparklineGroup xmlns:x14="urn:x14"/></ext></extLst>"#,
+    );
+
+    let (document, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("an unselected hidden sheet contributes no printed feature");
+    assert_eq!(document.pages.len(), 1);
+
+    let selected = ConvertOptions {
+        sheet_names: Some(vec!["Hidden".to_string()]),
+        ..ConvertOptions::default()
+    };
+    let error = XlsxParser
+        .parse(&data, &selected)
+        .expect_err("explicitly selecting the hidden sheet makes its sparkline printable");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "sparklines on printed sheet: Hidden"
+    ));
 }
 
 /// A sheet with no cells must resolve its drawing anchors against the
