@@ -580,6 +580,28 @@ fn test_number_format_date() {
 }
 
 #[test]
+fn invalid_large_date_serial_falls_back_to_its_number() {
+    let data = build_xlsx_formatted(|sheet| {
+        let cell = sheet.get_cell_mut("A1");
+        cell.set_value_number(123_456_789f64);
+        cell.get_style_mut()
+            .get_number_format_mut()
+            .set_format_code("m/d/yy;@");
+    });
+    let parser = XlsxParser;
+    let (doc, _warnings) = parser
+        .parse(&data, &ConvertOptions::default())
+        .expect("an out-of-range date serial must not panic");
+
+    let tp = get_sheet_page(&doc, 0);
+    let text = cell_text(&tp.table.rows[0].cells[0]);
+    assert!(
+        text.contains("123456789"),
+        "the invalid date serial stays visible as a number, got: {text}"
+    );
+}
+
+#[test]
 fn test_number_format_thousands_separator() {
     let data = build_xlsx_formatted(|sheet| {
         let cell = sheet.get_cell_mut("A1");

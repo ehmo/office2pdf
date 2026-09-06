@@ -30,9 +30,8 @@ fn arithmetic_and_precedence() {
     assert_eq!(evaluate("(1+2)*3", &ctx), Some(Value::Number(9.0)));
     assert_eq!(evaluate("-2+5", &ctx), Some(Value::Number(3.0)));
     assert_eq!(evaluate("10/4", &ctx), Some(Value::Number(2.5)));
-    // A division by zero is `#DIV/0!`, which this evaluator reports as "no
-    // answer" rather than painting the cell.
-    assert_eq!(evaluate("1/0", &ctx), None);
+    // A division by zero stays an error value so ISERROR can inspect it.
+    assert_eq!(evaluate("1/0", &ctx), Some(Value::Error));
 }
 
 /// Excel scores a comparison as TRUE/FALSE and multiplies it as 1/0, which is
@@ -77,6 +76,37 @@ fn functions_cover_what_the_rules_use() {
     assert_eq!(evaluate("MEDIAN(5,1,9)", &ctx), Some(Value::Number(5.0)));
     assert_eq!(evaluate("MEDIAN(1,2,3,4)", &ctx), Some(Value::Number(2.5)));
     assert_eq!(evaluate("ABS(0-4)", &ctx), Some(Value::Number(4.0)));
+}
+
+#[test]
+fn search_and_iserror_match_excels_case_insensitive_text_rule_pattern() {
+    let names = empty_names();
+    let found = |_column: u32, _row: u32| Value::Text("Needs 갱신 후보 Review".to_string());
+    let missing = |_column: u32, _row: u32| Value::Text("Current".to_string());
+
+    let found_ctx = context((5, 35), &names, &found);
+    assert_eq!(
+        evaluate("SEARCH(\"needs\",$E35)", &found_ctx),
+        Some(Value::Number(1.0))
+    );
+    assert_eq!(
+        evaluate("NOT(ISERROR(SEARCH(\"갱신 후보\",$E35)))", &found_ctx),
+        Some(Value::Bool(true))
+    );
+
+    let missing_ctx = context((5, 35), &names, &missing);
+    assert_eq!(
+        evaluate("NOT(ISERROR(SEARCH(\"갱신 후보\",$E35)))", &missing_ctx),
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn if_does_not_propagate_an_error_from_the_unselected_branch() {
+    let names = empty_names();
+    let ctx = context((1, 1), &names, &blank);
+    assert_eq!(evaluate("IF(TRUE,1,1/0)", &ctx), Some(Value::Number(1.0)));
+    assert_eq!(evaluate("IF(FALSE,1/0,2)", &ctx), Some(Value::Number(2.0)));
 }
 
 /// A relative reference is rebased onto the evaluated cell: `A$4` means "my
@@ -145,6 +175,51 @@ fn an_unmodelled_formula_answers_none() {
         None,
         "ranges are not modelled"
     );
+}
+
+#[test]
+fn preflight_distinguishes_supported_syntax_from_unknown_or_misread_forms() {
+    let names = std::collections::HashMap::from([(
+        "PERIOD_SELECTED".to_string(),
+        "MOD(COLUMN()-1,3)+1".to_string(),
+    )]);
+
+    for formula in [
+        "H$4=period_selected",
+        "IF(A1>0,ABS(A1),0)",
+        "AND(A1>0,B1<2)",
+        "SUM()=0",
+        "NOT(ISERROR(SEARCH(\"갱신 후보\",$E35)))",
+    ] {
+        assert!(
+            supports_expression(formula, &names),
+            "{formula} is inside the evaluator's exact grammar"
+        );
+    }
+    for formula in [
+        "COUNTIF(A1,1)>0",
+        "SUM(A1:A3)>0",
+        "COLUMN(A1)=1",
+        "IF(A1)",
+        "missing_name=1",
+        "A1^2>4",
+    ] {
+        assert!(
+            !supports_expression(formula, &names),
+            "{formula} would otherwise fail or be evaluated with different semantics"
+        );
+    }
+
+    assert!(supports_expression_on_sheet(
+        "Budget!A1>0",
+        &names,
+        "Budget"
+    ));
+    assert!(!supports_expression_on_sheet(
+        "Inputs!A1>0",
+        &names,
+        "Budget"
+    ));
 }
 
 /// A blank cell is zero in arithmetic, which is what makes a task row with no

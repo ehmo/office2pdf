@@ -14,7 +14,7 @@ license = "Apache-2.0"
 repository = "https://github.com/developer0hye/office2pdf"
 
 [patch.crates-io]
-umya-spreadsheet = { git = "https://github.com/developer0hye/umya-spreadsheet.git", branch = "fix/panic-safety-v2" }
+umya-spreadsheet = { git = "https://github.com/ehmo/umya-spreadsheet.git", rev = "ade2033ca820a8ecbf4141698c551b37886edb97" }
 docx-rs = { git = "https://github.com/developer0hye/docx-rs.git", branch = "fix/parse-tolerance" }
 # zune-jpeg 0.5.15 on crates.io ends a block with `warn!(…)` and no semicolon,
 # which rustc 1.97 rejects: "macro expansion ends with an incomplete

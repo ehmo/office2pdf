@@ -9,7 +9,9 @@ import type { SlideRange } from "./SlideRange";
 export type ConvertOptions = { 
 /**
  * Filter XLSX sheets by name. Only sheets whose names are in this list
- * will be included. If `None`, all sheets are included.
+ * are included, hidden ones among them. If `None`, every sheet the
+ * workbook does not hide is included — Excel prints no `hidden` or
+ * `veryHidden` sheet.
  */
 sheet_names: Array<string> | null, 
 /**

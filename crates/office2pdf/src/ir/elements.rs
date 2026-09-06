@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::style::{Alignment, Color, ParagraphStyle, TabLeader, TextStyle};
+use super::style::{Alignment, Color, PairKerning, ParagraphStyle, TabLeader, TextStyle};
 
 /// Header or footer content for flow pages.
 #[derive(Debug, Clone)]
@@ -211,6 +211,8 @@ pub enum ChartAreaOutline {
         width_pt: Option<f64>,
         /// The line's `a:solidFill/a:srgbClr`.
         color: Option<Color>,
+        /// `a:round` asks for circular joins at the chart area's corners.
+        round_join: bool,
     },
 }
 
@@ -293,9 +295,13 @@ pub struct Chart {
     pub has_legend: bool,
     /// Title of the category axis, from `<c:catAx><c:title>`.
     pub category_axis_title: Option<String>,
+    /// Run properties declared by the category axis title itself.
+    pub category_axis_title_text_style: ChartTextStyle,
     /// Title of the value axis, from `<c:valAx><c:title>`. Office writes it
     /// rotated a quarter turn anticlockwise along the axis.
     pub value_axis_title: Option<String>,
+    /// Run properties declared by the value axis title itself.
+    pub value_axis_title_text_style: ChartTextStyle,
     /// Where the category axis puts its major tick marks, from
     /// `<c:catAx><c:majorTickMark>`.
     pub category_axis_major_tick_mark: AxisTickMark,
@@ -517,8 +523,10 @@ pub enum ChartUserShapeExtent {
 /// size and character spacing from `c:chartSpace/c:txPr`, and an element that
 /// declares no `c:txPr` at all must fall through to the renderer's default
 /// (issues #669 and #1011).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChartTextStyle {
+    /// `a:defRPr/a:latin@typeface` for this text scope.
+    pub font_family: Option<String>,
     /// `a:defRPr@sz`, in points — the attribute is in hundredths.
     pub size_pt: Option<f64>,
     /// `a:defRPr@b`.
@@ -528,6 +536,8 @@ pub struct ChartTextStyle {
     /// Keeping DrawingML's integer unit avoids inflating every `Chart` by
     /// three nullable `f64` values; conversion belongs at the rendering edge.
     pub letter_spacing_hundredths: Option<i32>,
+    /// `a:defRPr@kern`, resolved from its point threshold.
+    pub pair_kerning: Option<PairKerning>,
     /// `a:defRPr/a:solidFill` — the colour the runs are set in (issue #916).
     pub color: Option<Color>,
     /// `a:bodyPr@vertOverflow="ellipsis"`. This body property is kept beside
@@ -542,26 +552,39 @@ impl ChartTextStyle {
     /// Office resolves a chart string against the most specific `c:txPr` that
     /// mentions the attribute, so an axis setting only `b` keeps the chart
     /// space's size rather than dropping to a default.
-    pub fn resolved_size_pt(self, override_style: Self) -> Option<f64> {
+    pub fn resolved_size_pt(&self, override_style: &Self) -> Option<f64> {
         override_style.size_pt.or(self.size_pt)
     }
 
     /// This style's weight where `override_style` states none.
-    pub fn resolved_bold(self, override_style: Self) -> Option<bool> {
+    pub fn resolved_bold(&self, override_style: &Self) -> Option<bool> {
         override_style.bold.or(self.bold)
     }
 
     /// This style's character spacing where `override_style` states none.
-    pub fn resolved_letter_spacing(self, override_style: Self) -> Option<f64> {
+    pub fn resolved_letter_spacing(&self, override_style: &Self) -> Option<f64> {
         override_style
             .letter_spacing_hundredths
             .or(self.letter_spacing_hundredths)
             .map(|hundredths| hundredths as f64 / 100.0)
     }
 
+    /// This style's pair-kerning rule where `override_style` states none.
+    pub fn resolved_pair_kerning(&self, override_style: &Self) -> Option<PairKerning> {
+        override_style.pair_kerning.or(self.pair_kerning)
+    }
+
     /// This style's colour where `override_style` states none.
-    pub fn resolved_color(self, override_style: Self) -> Option<Color> {
+    pub fn resolved_color(&self, override_style: &Self) -> Option<Color> {
         override_style.color.or(self.color)
+    }
+
+    /// This style's typeface where `override_style` states none.
+    pub fn resolved_font_family<'a>(&'a self, override_style: &'a Self) -> Option<&'a str> {
+        override_style
+            .font_family
+            .as_deref()
+            .or(self.font_family.as_deref())
     }
 }
 

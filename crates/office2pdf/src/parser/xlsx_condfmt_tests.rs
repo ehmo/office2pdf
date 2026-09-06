@@ -68,6 +68,7 @@ fn test_cond_fmt_less_than_font_color() {
         rule.set_operator(umya_spreadsheet::ConditionalFormattingOperatorValues::LessThan);
         rule.set_priority(1);
         let mut style = umya_spreadsheet::Style::default();
+        style.get_font_mut().set_name("Arial");
         style.get_font_mut().get_color_mut().set_argb("FF0000FF");
         rule.set_style(style);
         let mut formula = umya_spreadsheet::Formula::default();
@@ -107,6 +108,7 @@ fn test_cond_fmt_equal_bold() {
         rule.set_operator(umya_spreadsheet::ConditionalFormattingOperatorValues::Equal);
         rule.set_priority(1);
         let mut style = umya_spreadsheet::Style::default();
+        style.get_font_mut().set_name("Arial");
         style.get_font_mut().set_bold(true);
         rule.set_style(style);
         let mut formula = umya_spreadsheet::Formula::default();
@@ -135,7 +137,88 @@ fn test_cond_fmt_equal_bold() {
 }
 
 #[test]
-fn test_cond_fmt_between() {
+fn test_cond_fmt_applies_supported_font_properties() {
+    let data = build_xlsx_with_cond_fmt(|sheet| {
+        sheet.get_cell_mut("A1").set_value_number(100.0);
+
+        let mut rule = umya_spreadsheet::ConditionalFormattingRule::default();
+        rule.set_type(umya_spreadsheet::ConditionalFormatValues::CellIs);
+        rule.set_operator(umya_spreadsheet::ConditionalFormattingOperatorValues::Equal);
+        rule.set_priority(1);
+        let mut style = umya_spreadsheet::Style::default();
+        let font = style.get_font_mut();
+        font.set_name("Arial");
+        font.set_size(14.0);
+        font.set_italic(true);
+        font.set_underline("single");
+        font.set_strikethrough(true);
+        rule.set_style(style);
+        let mut formula = umya_spreadsheet::Formula::default();
+        formula.set_string_value("100");
+        rule.set_formula(formula);
+
+        let mut seq = umya_spreadsheet::SequenceOfReferences::default();
+        seq.set_sqref("A1");
+        let mut cf = umya_spreadsheet::ConditionalFormatting::default();
+        cf.set_sequence_of_references(seq);
+        cf.add_conditional_collection(rule);
+        sheet.set_conditional_formatting_collection(vec![cf]);
+    });
+    let (doc, _warnings) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("supported differential font properties should parse");
+    let style = first_run_style(&get_sheet_page(&doc, 0).table.rows[0].cells[0]);
+    assert_eq!(style.font_family.as_deref(), Some("Arial"));
+    assert_eq!(style.font_size, Some(14.0));
+    assert_eq!(style.italic, Some(true));
+    assert_eq!(style.underline, Some(true));
+    assert_eq!(style.strikethrough, Some(true));
+}
+
+#[test]
+fn unsupported_differential_style_refuses_batch_and_streaming() {
+    let data = build_xlsx_with_cond_fmt(|sheet| {
+        sheet.get_cell_mut("A1").set_value_number(100.0);
+
+        let mut rule = umya_spreadsheet::ConditionalFormattingRule::default();
+        rule.set_type(umya_spreadsheet::ConditionalFormatValues::CellIs);
+        rule.set_operator(umya_spreadsheet::ConditionalFormattingOperatorValues::Equal);
+        rule.set_priority(1);
+        let mut style = umya_spreadsheet::Style::default();
+        style
+            .get_alignment_mut()
+            .set_horizontal(umya_spreadsheet::HorizontalAlignmentValues::Center);
+        rule.set_style(style);
+        let mut formula = umya_spreadsheet::Formula::default();
+        formula.set_string_value("100");
+        rule.set_formula(formula);
+
+        let mut seq = umya_spreadsheet::SequenceOfReferences::default();
+        seq.set_sqref("A1");
+        let mut cf = umya_spreadsheet::ConditionalFormatting::default();
+        cf.set_sequence_of_references(seq);
+        cf.add_conditional_collection(rule);
+        sheet.set_conditional_formatting_collection(vec![cf]);
+    });
+
+    for error in [
+        XlsxParser
+            .parse(&data, &ConvertOptions::default())
+            .expect_err("batch parsing must refuse an unrendered differential alignment"),
+        XlsxParser
+            .parse_streaming(&data, &ConvertOptions::default(), 1)
+            .expect_err("streaming must refuse an unrendered differential alignment"),
+    ] {
+        assert!(matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == "unsupported differential conditional-format style"
+        ));
+    }
+}
+
+#[test]
+fn test_cond_fmt_between_refuses_instead_of_treating_one_bound_as_both() {
     let data = build_xlsx_with_cond_fmt(|sheet| {
         sheet.get_cell_mut("A1").set_value_number(5.0);
         sheet.get_cell_mut("A2").set_value_number(20.0);
@@ -161,23 +244,14 @@ fn test_cond_fmt_between() {
         sheet.set_conditional_formatting_collection(vec![cf]);
     });
 
-    let parser = XlsxParser;
-    let (doc, _warnings) = parser.parse(&data, &ConvertOptions::default()).unwrap();
-    let tp = get_sheet_page(&doc, 0);
-
-    assert!(tp.table.rows[0].cells[0].background.is_none());
-    assert_eq!(
-        tp.table.rows[1].cells[0].background,
-        Some(Color::new(0, 255, 0))
-    );
-    assert_eq!(
-        tp.table.rows[2].cells[0].background,
-        Some(Color::new(0, 255, 0))
-    );
-    assert_eq!(
-        tp.table.rows[3].cells[0].background,
-        Some(Color::new(0, 255, 0))
-    );
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("umya preserves only one bound, so between cannot render faithfully");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "unsupported conditional-format rule on printed sheet: Sheet1"
+    ));
 }
 
 #[test]
@@ -657,7 +731,7 @@ fn test_cond_fmt_contains_text_background() {
 
         let mut rule = umya_spreadsheet::ConditionalFormattingRule::default();
         rule.set_type(umya_spreadsheet::ConditionalFormatValues::ContainsText);
-        rule.set_text("Grain");
+        rule.set_text("grain");
         rule.set_priority(1);
         let mut style = umya_spreadsheet::Style::default();
         style.set_background_color("FFFFE699");
@@ -676,7 +750,7 @@ fn test_cond_fmt_contains_text_background() {
     let tp = get_sheet_page(&doc, 0);
     assert!(
         tp.table.rows[0].cells[1].background.is_some(),
-        "matching cell must gain the rule fill"
+        "Excel text rules match without case sensitivity"
     );
     assert!(
         tp.table.rows[1].cells[1].background.is_none(),
@@ -857,6 +931,7 @@ fn test_cond_fmt_cell_is_equal_text_applies_differential_style() {
         rule.set_priority(1);
         let mut style = umya_spreadsheet::Style::default();
         style.set_background_color("FFFFC7CE");
+        style.get_font_mut().set_name("Arial");
         style.get_font_mut().set_bold(true);
         style.get_font_mut().get_color_mut().set_argb("FF9C0006");
         rule.set_style(style);

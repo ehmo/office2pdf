@@ -19,6 +19,8 @@ mod fit_to_page;
 mod indent;
 #[path = "xlsx_paper_state.rs"]
 mod paper_state;
+#[path = "xlsx_preflight.rs"]
+mod preflight;
 #[path = "xlsx_print_headings.rs"]
 mod print_headings;
 #[path = "xlsx_print_options.rs"]
@@ -275,6 +277,17 @@ fn sheet_prints(sheet: &umya_spreadsheet::Worksheet, options: &ConvertOptions) -
                 | umya_spreadsheet::SheetStateValues::VeryHidden
         ),
     }
+}
+
+fn printed_sheet_names(
+    book: &umya_spreadsheet::Spreadsheet,
+    options: &ConvertOptions,
+) -> std::collections::HashSet<String> {
+    book.get_sheet_collection()
+        .iter()
+        .filter(|sheet| sheet_prints(sheet, options))
+        .map(|sheet| sheet.get_name().to_string())
+        .collect()
 }
 
 /// The first sheet that prints, honouring `sheet_names` and sheet visibility.
@@ -714,10 +727,13 @@ impl XlsxParser {
         options: &ConvertOptions,
         chunk_size: usize,
     ) -> Result<(Vec<Document>, Vec<ConvertWarning>), ConvertError> {
-        let cursor = Cursor::new(data);
+        preflight::ensure_safe_package_bounds(data)?;
+        let upstream_data = preflight::normalize_upstream_reader_inputs(data)?;
+        let cursor = Cursor::new(upstream_data.as_ref());
         let book = umya_spreadsheet::reader::xlsx::read_reader(cursor, true).map_err(|e| {
             crate::parser::parse_err(format!("Failed to parse XLSX (umya-spreadsheet): {e}"))
         })?;
+        preflight::ensure_supported_package(data, &printed_sheet_names(&book, options))?;
 
         let metadata = extract_xlsx_metadata(&book);
         let cond_fmt_hints = cond_fmt_raw::extract_cond_fmt_hints(data);
@@ -740,7 +756,7 @@ impl XlsxParser {
         let mut warnings = Vec::new();
 
         let mut chart_map = extract_charts_with_anchors(data);
-        let mut image_map = extract_images_with_anchors(data, &mut warnings);
+        let mut image_map = extract_images_with_anchors(data)?;
         let mut text_box_map = extract_text_boxes_with_anchors(data);
 
         let mut chunks = Vec::new();
@@ -1005,6 +1021,12 @@ impl XlsxParser {
                     !row_breaks.is_empty(),
                     chunk_end < row_end,
                 )?;
+                xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                    &sheet_page,
+                    title_columns,
+                    fit,
+                    header_footer_scales_with_doc,
+                )?;
                 let doc = Document {
                     metadata: metadata.clone(),
                     pages: xlsx_pagination::split_sheet_page_by_width(
@@ -1044,10 +1066,13 @@ impl Parser for XlsxParser {
         data: &[u8],
         options: &ConvertOptions,
     ) -> Result<(Document, Vec<ConvertWarning>), ConvertError> {
-        let cursor = Cursor::new(data);
+        preflight::ensure_safe_package_bounds(data)?;
+        let upstream_data = preflight::normalize_upstream_reader_inputs(data)?;
+        let cursor = Cursor::new(upstream_data.as_ref());
         let book = umya_spreadsheet::reader::xlsx::read_reader(cursor, true).map_err(|e| {
             crate::parser::parse_err(format!("Failed to parse XLSX (umya-spreadsheet): {e}"))
         })?;
+        preflight::ensure_supported_package(data, &printed_sheet_names(&book, options))?;
 
         // Extract metadata from umya-spreadsheet properties
         let metadata = extract_xlsx_metadata(&book);
@@ -1072,7 +1097,7 @@ impl Parser for XlsxParser {
 
         // Extract charts with anchor positions per sheet
         let mut chart_map = extract_charts_with_anchors(data);
-        let mut image_map = extract_images_with_anchors(data, &mut warnings);
+        let mut image_map = extract_images_with_anchors(data)?;
         let mut text_box_map = extract_text_boxes_with_anchors(data);
 
         let sheet_count = book.get_sheet_collection().len();
@@ -1305,6 +1330,12 @@ impl Parser for XlsxParser {
                     false,
                     false,
                 )?;
+                xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                    &sheet_page,
+                    title_columns,
+                    fit,
+                    header_footer_scales_with_doc,
+                )?;
                 pages.extend(
                     xlsx_pagination::split_sheet_page_by_width(
                         sheet_page,
@@ -1440,6 +1471,12 @@ impl Parser for XlsxParser {
                         header_footer_scales_with_doc,
                         true,
                         false,
+                    )?;
+                    xlsx_pagination::ensure_supported_horizontal_merged_cell_flow(
+                        &sheet_page,
+                        title_columns,
+                        fit,
+                        header_footer_scales_with_doc,
                     )?;
                     pages.extend(
                         xlsx_pagination::split_sheet_page_by_width(

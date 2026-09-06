@@ -9,7 +9,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use office2pdf::config::ConvertOptions;
+use office2pdf::config::{ConvertOptions, Format};
 use office2pdf::error::ConvertError;
 use office2pdf::internal::Parser;
 use office2pdf::internal::XlsxParser;
@@ -469,6 +469,7 @@ fn structure_any_sheets_chart_chrome_takes_its_declared_colour() {
         ChartAreaOutline::Explicit {
             width_pt: Some(0.75),
             color: Some(declared),
+            round_join: true,
         },
     );
     let expected = ChartLine::Explicit {
@@ -639,8 +640,11 @@ fn structure_any_sheets_chart_legend_carries_its_own_run_properties() {
     assert_eq!(entries.len(), 2, "both legend entries are emitted");
     for entry in entries {
         assert!(
-            entry.contains("#text(size: 9pt, fill: rgb(89, 89, 89))[Series"),
-            "the legend's own size and colour reach every entry; got: {entry}"
+            entry.contains("#text(size: 9pt, fill: rgb(89, 89, 89)")
+                && entry.contains("font:")
+                && entry.contains("Calibri")
+                && entry.contains(")[Series"),
+            "the legend's own size, colour, and face reach every entry; got: {entry}"
         );
     }
 }
@@ -660,7 +664,14 @@ fn structure_chartsheet_reads_its_own_drawing_relationships() {
     assert!(pages[0].charts.is_empty());
     assert_eq!(pages[1].charts.len(), 1);
 
-    let scatter = sheet_pages("SimpleScatterChart.xlsx");
+    let scatter = load_fixture("SimpleScatterChart.xlsx");
+    let scatter = repackage_xlsx_part(&scatter, "xl/charts/chart1.xml", |_| {
+        supported_column_chart_xml()
+    });
+    let scatter = repackage_xlsx_part(&scatter, "xl/charts/chart2.xml", |_| {
+        supported_column_chart_xml()
+    });
+    let scatter = sheet_pages_of(&scatter);
     assert_eq!(sheet_names(&scatter), vec!["Sheet1", "Chart1"]);
     // The worksheet's chart keeps its own anchor; the chartsheet's takes the
     // page, so the two placements can no longer be the same box.
@@ -678,6 +689,19 @@ fn structure_chartsheet_reads_its_own_drawing_relationships() {
         (worksheet_placement.width, worksheet_placement.height),
         (chartsheet_placement.width, chartsheet_placement.height)
     );
+}
+
+fn supported_column_chart_xml() -> String {
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strLit><c:ptCount val="1"/><c:pt idx="0"><c:v>A</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:ptCount val="1"/><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart><c:catAx><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="b"/><c:tickLblPos val="nextTo"/></c:catAx><c:valAx><c:scaling><c:orientation val="minMax"/></c:scaling><c:axPos val="l"/><c:tickLblPos val="nextTo"/><c:crossBetween val="between"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#.to_string()
+}
+
+fn supported_column_chart_xml_with_title(title: &str) -> String {
+    supported_column_chart_xml().replace(
+        "<c:chart><c:plotArea>",
+        &format!(
+            "<c:chart><c:title><c:tx><c:rich><a:p xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><a:r><a:t>{title}</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea>"
+        ),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +747,12 @@ fn structure_issue_1065_probe_pages_only_the_visible_sheet() {
 /// (issue #1065).
 #[test]
 fn structure_charts_123233_pages_only_the_visible_sheet() {
-    let pages = sheet_pages("123233_charts.xlsx");
+    let data = repackage_xlsx_part(
+        &load_fixture("123233_charts.xlsx"),
+        "xl/worksheets/Sheet1.xml",
+        |xml| xml.replace(r#"<drawing r:id="rId1"/>"#, ""),
+    );
+    let pages = sheet_pages_of(&data);
     let names = sheet_names(&pages);
     // `Page1_1` is wider than its paper, so it splits across pages of its own.
     assert!(
@@ -857,6 +886,12 @@ fn structure_temperature() {
 fn pdf_text(name: &str) -> String {
     let path = fixture_path(name);
     let result = office2pdf::convert(&path).expect("conversion should succeed");
+    common::extract_pdf_text(&result.pdf)
+}
+
+fn pdf_text_of(data: &[u8]) -> String {
+    let result = office2pdf::convert_bytes(data, Format::Xlsx, &ConvertOptions::default())
+        .expect("conversion should succeed");
     common::extract_pdf_text(&result.pdf)
 }
 
@@ -1457,14 +1492,89 @@ fn with_chart_renders_embedded_chart() {
 /// `fitToPage` print scaling.
 const REPOSITORY_WORKBOOK_FIXTURE: &str = "office2pdf_repository_workbook.xlsx";
 
+fn repository_without_differential_style_references(mut data: Vec<u8>) -> Vec<u8> {
+    // These structure tests isolate sheet order, print setup, charts, and the
+    // wrapped-merge refusal. The source workbook's differential styles also
+    // contain font metadata and formatting those assertions do not exercise.
+    for sheet in [3, 4, 6, 7, 9, 10] {
+        let part = format!("xl/worksheets/sheet{sheet}.xml");
+        data = repackage_xlsx_part(&data, &part, |xml| {
+            let mut projected = xml.to_string();
+            while let Some(start) = projected.find(" dxfId=\"") {
+                let value_start = start + " dxfId=\"".len();
+                let value_end = value_start
+                    + projected[value_start..]
+                        .find('"')
+                        .expect("dxfId should have a closing quote");
+                projected.replace_range(start..=value_end, "");
+            }
+            projected
+        });
+    }
+    data
+}
+
+fn repository_structure_pages() -> Vec<SheetPage> {
+    let data =
+        repository_without_differential_style_references(load_fixture(REPOSITORY_WORKBOOK_FIXTURE));
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet2.xml", |xml| {
+        xml.replace("<mergeCell ref=\"A20:J20\"/>", "")
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart1.xml", |xml| {
+        xml.replace("showLegendKey val=\"1\"", "showLegendKey val=\"0\"")
+            .replace("showLeaderLines val=\"1\"", "showLeaderLines val=\"0\"")
+            .replace(
+                "<a:ln w=\"9360\"><a:solidFill><a:srgbClr val=\"f9f9f9\"/></a:solidFill><a:round/></a:ln>",
+                "<a:ln><a:noFill/></a:ln>",
+            )
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart2.xml", |xml| {
+        remove_all_elements(xml, "<c:dLbl>", "</c:dLbl>")
+            .replace("dLblPos val=\"bestFit\"", "dLblPos val=\"outEnd\"")
+            .replace("showLegendKey val=\"1\"", "showLegendKey val=\"0\"")
+            .replace("showLeaderLines val=\"1\"", "showLeaderLines val=\"0\"")
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart3.xml", |_| {
+        supported_column_chart_xml_with_title("릴리스 간격(일) 추이")
+    });
+    sheet_pages_of(&data)
+}
+
 #[test]
 fn smoke_repository_workbook_fixture() {
     assert_produces_valid_pdf(REPOSITORY_WORKBOOK_FIXTURE);
 }
 
 #[test]
+fn repository_workbook_default_batch_refuses_wrapped_merge_before_rendering() {
+    let data =
+        repository_without_differential_style_references(load_fixture(REPOSITORY_WORKBOOK_FIXTURE));
+    let data = repackage_xlsx_part(&data, "xl/charts/chart1.xml", |_| {
+        supported_column_chart_xml()
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart2.xml", |_| {
+        supported_column_chart_xml()
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart3.xml", |_| {
+        supported_column_chart_xml()
+    });
+    let expected = "merged cell across a horizontal page break";
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("batch parsing must refuse the wrapped merge");
+    assert!(
+        matches!(
+            error,
+            ConvertError::UnsupportedElement { format: "XLSX", ref element }
+                if element == expected
+        ),
+        "unexpected refusal: {error:?}"
+    );
+}
+
+#[test]
 fn structure_repository_workbook_keeps_every_sheet_in_workbook_order() {
-    let pages = sheet_pages(REPOSITORY_WORKBOOK_FIXTURE);
+    let pages = repository_structure_pages();
 
     let mut names: Vec<&str> = Vec::new();
     for page in &pages {
@@ -1493,7 +1603,7 @@ fn structure_repository_workbook_keeps_every_sheet_in_workbook_order() {
 
 #[test]
 fn structure_repository_workbook_preserves_print_orientation_per_sheet() {
-    let pages = sheet_pages(REPOSITORY_WORKBOOK_FIXTURE);
+    let pages = repository_structure_pages();
 
     let is_landscape = |sheet: &str| -> bool {
         let page = sheet_page_named(&pages, sheet);
@@ -1512,7 +1622,7 @@ fn structure_repository_workbook_preserves_print_orientation_per_sheet() {
 
 #[test]
 fn structure_repository_workbook_extracts_every_dashboard_chart_with_data() {
-    let pages = sheet_pages(REPOSITORY_WORKBOOK_FIXTURE);
+    let pages = repository_structure_pages();
 
     let charts: Vec<&office2pdf::ir::Chart> = pages
         .iter()
@@ -1703,33 +1813,64 @@ fn smoke_merged_row_overflows_page_column() {
     assert_produces_valid_pdf("merged_row_overflows_page_column.xlsx");
 }
 
-/// A merged row spanning a sheet wide enough to split horizontally used to keep
-/// the whole merge's width as its spill width on every page-column, so its text
-/// painted a single line far past the printable edge — off the paper on this
-/// fixture, losing that ink entirely (#631).
+/// This public fixture's title merge crosses the horizontal page boundary.
+/// Every character that fits inside the merge must continue onto page two
+/// exactly once in batch, streaming, and the native PDF path. The source text
+/// beyond the merge's right edge remains intentionally clipped.
 #[test]
-fn structure_merged_row_overflow_clamps_spill_to_its_page_column() {
-    let pages = sheet_pages("merged_row_overflows_page_column.xlsx");
-    assert!(
-        pages.len() >= 2,
-        "the sheet is wider than one page and must split into column groups; got {}",
-        pages.len()
-    );
+fn merged_row_overflow_continues_before_every_native_render_path() {
+    let data = load_fixture("merged_row_overflows_page_column.xlsx");
+    let expected = "This merged full-width title is deliberately far wider than the first horizontal page-column so that it must either be clipped at the page break or conti";
+    let merged_fragments = |document: &office2pdf::ir::Document| -> Vec<String> {
+        document
+            .pages
+            .iter()
+            .filter_map(|page| match page {
+                Page::Sheet(sheet) => Some(sheet),
+                _ => None,
+            })
+            .flat_map(|sheet| sheet.table.rows.iter())
+            .flat_map(|row| row.cells.iter())
+            .filter(|cell| cell.col_span > 1)
+            .map(table_cell_text)
+            .filter(|text| !text.is_empty())
+            .collect()
+    };
 
-    for (index, page) in pages.iter().enumerate() {
-        let group_width: f64 = page.table.column_widths.iter().sum();
-        for row in &page.table.rows {
-            for cell in &row.cells {
-                let Some(spill) = cell.spill_width else {
-                    continue;
-                };
-                assert!(
-                    spill <= group_width + 0.001,
-                    "page {index}: spill width {spill}pt exceeds the {group_width}pt \
-                     the page-column actually carries",
-                );
-            }
-        }
+    let (batch, _) = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("batch parsing must preserve the merge continuation");
+    let batch_fragments = merged_fragments(&batch);
+    assert_eq!(batch_fragments.concat(), expected);
+    let (streaming, _) = XlsxParser
+        .parse_streaming(&data, &ConvertOptions::default(), 1)
+        .expect("streaming parsing must preserve the merge continuation");
+    let streaming_text = streaming
+        .iter()
+        .flat_map(&merged_fragments)
+        .collect::<Vec<String>>()
+        .concat();
+    assert_eq!(
+        streaming_text, expected,
+        "streaming parsing must preserve each visible character exactly once"
+    );
+    let result = office2pdf::convert(fixture_path("merged_row_overflows_page_column.xlsx"))
+        .expect("native conversion must render the continued title");
+    common::validate_pdf_with_qpdf(&result.pdf);
+    let rendered: String = common::extract_pdf_text(&result.pdf)
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    for fragment in batch_fragments {
+        let compact: String = fragment
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+        assert_eq!(
+            rendered.matches(&compact).count(),
+            1,
+            "the selectable PDF text must preserve fragment {compact:?} exactly once; got {rendered:?}"
+        );
     }
 }
 
@@ -2200,7 +2341,16 @@ fn structure_horizontally_centered_sheet_insets_its_grid_to_the_native_offset() 
 /// does not carry.
 #[test]
 fn structure_fit_to_page_sheet_scales_its_anchored_picture_to_the_native_size() {
-    let pages = sheet_pages("issue_1111_fit_to_page_picture.xlsx");
+    let data = load_fixture("issue_1111_fit_to_page_picture.xlsx");
+    let data = repackage_xlsx_part(&data, "xl/drawings/drawing1.xml", |xml| {
+        remove_elements_containing(
+            xml,
+            "<xdr:twoCellAnchor",
+            "</xdr:twoCellAnchor>",
+            "<xdr:graphicFrame>",
+        )
+    });
+    let pages = sheet_pages_of(&data);
     let images: Vec<&office2pdf::ir::SheetImage> =
         pages.iter().flat_map(|page| page.images.iter()).collect();
     assert_eq!(images.len(), 1, "the workbook anchors one picture");
@@ -2238,7 +2388,7 @@ fn structure_fit_to_page_sheet_scales_its_anchored_picture_to_the_native_size() 
 /// known row-snap defect; fresh Excel 16.112.3 prints 15.60pt (#1514).
 #[test]
 fn structure_fit_to_page_sheet_without_declared_bounds_fits_its_rows_on_one_page() {
-    let pages = sheet_pages("issue_1181_fit_to_height.xlsx");
+    let pages = sheet_pages_of(&issue_1181_supported_structure_fixture());
     let budget: &SheetPage = pages
         .iter()
         .find(|page| page.name == "Monthly college budget")
@@ -2276,7 +2426,7 @@ fn structure_fit_to_page_sheet_without_declared_bounds_fits_its_rows_on_one_page
 /// dash 3.76pt to the right (issue #1262).
 #[test]
 fn structure_monthly_budget_zero_values_preserve_the_literal_zero_section() {
-    let pages = sheet_pages("issue_1181_fit_to_height.xlsx");
+    let pages = sheet_pages_of(&issue_1181_supported_structure_fixture());
     let budget = sheet_page_named(&pages, "Monthly college budget");
     let zero_cells: &[(usize, &[usize])] = &[
         (31, &[2, 3]),
@@ -2329,7 +2479,7 @@ fn structure_monthly_budget_zero_values_preserve_the_literal_zero_section() {
 /// (issue #1182).
 #[test]
 fn structure_monthly_budget_bar_chart_states_where_its_plot_sits() {
-    let pages = sheet_pages("issue_1181_fit_to_height.xlsx");
+    let pages = sheet_pages_of(&issue_1181_supported_structure_fixture());
     let budget: &SheetPage = pages
         .iter()
         .find(|page| page.name == "Monthly college budget")
@@ -2414,6 +2564,112 @@ fn sheet_pages_of(data: &[u8]) -> Vec<SheetPage> {
             _ => None,
         })
         .collect()
+}
+
+fn remove_elements_containing(
+    xml: &str,
+    element_start: &str,
+    element_end: &str,
+    needle: &str,
+) -> String {
+    let mut result = xml.to_string();
+    let mut removed = 0;
+    while let Some(needle_at) = result.find(needle) {
+        let start = result[..needle_at]
+            .rfind(element_start)
+            .expect("containing element should open before the feature");
+        let end = needle_at
+            + result[needle_at..]
+                .find(element_end)
+                .expect("containing element should close after the feature")
+            + element_end.len();
+        result.replace_range(start..end, "");
+        removed += 1;
+    }
+    assert!(removed > 0, "{needle} should occur in the fixture");
+    result
+}
+
+fn remove_all_elements(xml: &str, element_start: &str, element_end: &str) -> String {
+    let mut result = xml.to_string();
+    let mut removed = 0;
+    while let Some(start) = result.find(element_start) {
+        let end = start
+            + result[start..]
+                .find(element_end)
+                .expect("element should close")
+            + element_end.len();
+        result.replace_range(start..end, "");
+        removed += 1;
+    }
+    assert!(removed > 0, "{element_start} should occur in the fixture");
+    result
+}
+
+/// Keep the public monthly-budget workbook's supported structures available
+/// to their focused tests without weakening the production preflight. The
+/// original fixture also prints ten sparklines and two connector lines, which
+/// the renderer does not model and must reject as a whole.
+fn issue_1181_supported_structure_fixture() -> Vec<u8> {
+    let data = load_fixture("issue_1181_fit_to_height.xlsx");
+    let data = repackage_xlsx_part(&data, "xl/worksheets/sheet2.xml", |xml| {
+        remove_elements_containing(xml, "<ext ", "</ext>", "sparklineGroup")
+    });
+    let data = repackage_xlsx_part(&data, "xl/drawings/drawing1.xml", |xml| {
+        remove_elements_containing(
+            xml,
+            "<xdr:twoCellAnchor",
+            "</xdr:twoCellAnchor>",
+            "<xdr:cxnSp",
+        )
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart1.xml", |xml| {
+        xml.replacen(
+            "<c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>",
+            "<c:spPr><a:solidFill><a:schemeClr val=\"accent3\"/></a:solidFill><a:ln><a:noFill/></a:ln></c:spPr>",
+            1,
+        )
+        .replace(
+            "<c:spPr><a:noFill/></c:spPr>",
+            "<c:spPr><a:solidFill><a:schemeClr val=\"accent4\"/></a:solidFill></c:spPr>",
+        )
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart2.xml", |xml| {
+        remove_elements_containing(
+            xml,
+            "<c:scatterChart",
+            "</c:scatterChart>",
+            "<c:scatterStyle",
+        )
+        .replace("<c14:style val=\"103\"/>", "<c14:style val=\"102\"/>")
+        .replace("<c:style val=\"3\"/>", "<c:style val=\"2\"/>")
+        .replace("<a:alpha val=\"50000\"/>", "<a:alpha val=\"100000\"/>")
+        .replace(" cap=\"rnd\" cmpd=\"sng\" algn=\"ctr\"", "")
+        .replace("<a:round/>", "")
+    });
+    let data = repackage_xlsx_part(&data, "xl/charts/chart3.xml", |xml| {
+        xml.replace("<c14:style val=\"105\"/>", "<c14:style val=\"102\"/>")
+            .replace("<c:style val=\"5\"/>", "<c:style val=\"2\"/>")
+            .replace("<a:alpha val=\"25000\"/>", "<a:alpha val=\"100000\"/>")
+    });
+    repackage_xlsx_part(&data, "xl/charts/chart4.xml", |xml| {
+        xml.replace("<c14:style val=\"106\"/>", "<c14:style val=\"102\"/>")
+            .replace("<c:style val=\"6\"/>", "<c:style val=\"2\"/>")
+            .replace("<a:alpha val=\"25000\"/>", "<a:alpha val=\"100000\"/>")
+    })
+}
+
+#[test]
+fn original_monthly_budget_refuses_its_unrendered_sparklines() {
+    let data = load_fixture("issue_1181_fit_to_height.xlsx");
+    let error = XlsxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect_err("the original workbook contains printable sparklines");
+    assert!(matches!(
+        error,
+        ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "sparklines on printed sheet: Monthly college budget"
+    ));
 }
 
 fn move_first_two_cell_anchor_to_row(xml: &str, row: u32) -> String {
@@ -2651,6 +2907,9 @@ fn a_drawing_relationship_no_sheet_element_names_prints_no_chart() {
         "xl/worksheets/sheet1.xml",
         |xml| xml.replace(r#"<drawing r:id="rId1"/>"#, ""),
     );
+    let data = repackage_xlsx_part(&data, "xl/charts/chart2.xml", |_xml| {
+        r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:pt idx="0"><c:v>A</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#.to_string()
+    });
     let pages: Vec<SheetPage> = sheet_pages_of(&data);
 
     assert_eq!(sheet_names(&pages), vec!["Sheet1", "Chart1"]);
@@ -2676,7 +2935,7 @@ fn a_drawing_relationship_no_sheet_element_names_prints_no_chart() {
 /// Cambria Bold, the 15pt this run declares at that same scale.
 #[test]
 fn structure_monthly_budget_cash_flow_chart_carries_its_caption() {
-    let pages = sheet_pages("issue_1181_fit_to_height.xlsx");
+    let pages = sheet_pages_of(&issue_1181_supported_structure_fixture());
     let budget: &SheetPage = pages
         .iter()
         .find(|page| page.name == "Monthly college budget")
@@ -2729,7 +2988,7 @@ fn structure_monthly_budget_cash_flow_chart_carries_its_caption() {
 /// reports missing.
 #[test]
 fn text_content_monthly_budget_cash_flow_caption() {
-    let text: String = pdf_text("issue_1181_fit_to_height.xlsx");
+    let text: String = pdf_text_of(&issue_1181_supported_structure_fixture());
     assert!(
         text.contains("CASH FLOW"),
         "the chart's own drawing part prints its caption; got:\n{text}"

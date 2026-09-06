@@ -114,7 +114,9 @@ fn bar_chart() -> crate::ir::Chart {
         legend_position: crate::ir::LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -182,13 +184,14 @@ fn test_wide_sheet_splits_into_column_groups() {
 }
 
 #[test]
-fn test_merge_straddling_boundary_truncates_and_blanks_continuation() {
-    // Columns 0-1 on page 1, columns 2-3 on page 2. The merged cell spans
-    // columns 1-2, so page 1 shows its content truncated to one column and
-    // page 2 shows a blank continuation cell.
+fn test_left_aligned_merge_straddling_boundary_continues_without_duplication() {
+    // Columns 0-1 fit page 1 and columns 2-3 fit page 2. The merge's one-line
+    // text crosses that boundary and must continue from the same text offset.
+    let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let merged = TableCell {
         col_span: 2,
-        ..cell("MERGED")
+        spill_width: Some(300.0),
+        ..cell(text)
     };
     let page = make_page(
         vec![150.0, 150.0, 150.0, 150.0],
@@ -198,18 +201,304 @@ fn test_merge_straddling_boundary_truncates_and_blanks_continuation() {
             height: None,
         }],
     );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("a one-line left-aligned merge can continue across the boundary");
     let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
     assert_eq!(pages.len(), 2);
+    let first = cell_text(&pages[0].table.rows[0].cells[1]);
+    let second = cell_text(&pages[1].table.rows[0].cells[0]);
+    assert!(!first.is_empty());
+    assert!(!second.is_empty());
+    assert_eq!(format!("{first}{second}"), text);
+}
 
-    let first_row = &pages[0].table.rows[0];
-    assert_eq!(first_row.cells.len(), 2);
-    assert_eq!(cell_text(&first_row.cells[1]), "MERGED");
-    assert_eq!(first_row.cells[1].col_span, 1u32);
+#[test]
+fn test_left_aligned_merge_continuation_preserves_rich_text_styles() {
+    let mut merged = cell("");
+    merged.col_span = 2;
+    merged.spill_width = Some(300.0);
+    let Block::Paragraph(paragraph) = &mut merged.content[0] else {
+        unreachable!()
+    };
+    paragraph.runs = vec![
+        Run {
+            text: "A".repeat(25),
+            style: TextStyle {
+                bold: Some(true),
+                ..TextStyle::default()
+            },
+            href: None,
+            footnote: None,
+        },
+        Run {
+            text: "B".repeat(10),
+            style: TextStyle {
+                italic: Some(true),
+                ..TextStyle::default()
+            },
+            href: None,
+            footnote: None,
+        },
+    ];
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), merged, cell("D")],
+            height: None,
+        }],
+    );
 
-    let second_row = &pages[1].table.rows[0];
-    assert_eq!(second_row.cells.len(), 2);
-    assert_eq!(cell_text(&second_row.cells[0]), "");
-    assert_eq!(cell_text(&second_row.cells[1]), "D");
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("one-line rich text can continue across the boundary");
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+    let first = &pages[0].table.rows[0].cells[1];
+    let second = &pages[1].table.rows[0].cells[0];
+    assert_eq!(
+        format!("{}{}", cell_text(first), cell_text(second)),
+        format!("{}{}", "A".repeat(25), "B".repeat(10))
+    );
+    let Block::Paragraph(first_paragraph) = &first.content[0] else {
+        unreachable!()
+    };
+    assert!(
+        first_paragraph
+            .runs
+            .iter()
+            .all(|run| run.style.bold == Some(true))
+    );
+    let Block::Paragraph(second_paragraph) = &second.content[0] else {
+        unreachable!()
+    };
+    assert!(
+        second_paragraph
+            .runs
+            .iter()
+            .any(|run| run.style.bold == Some(true))
+    );
+    assert!(
+        second_paragraph
+            .runs
+            .iter()
+            .any(|run| run.style.italic == Some(true))
+    );
+}
+
+#[test]
+fn test_wrapped_left_aligned_merge_straddling_boundary_refuses() {
+    let mut merged = cell("wrapped\ntext");
+    merged.col_span = 2;
+    merged.spill_width = Some(300.0);
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), merged, cell("D")],
+            height: None,
+        }],
+    );
+
+    let error =
+        ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+            .expect_err("wrapped continuation geometry is not proved");
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "merged cell across a horizontal page break"
+    ));
+}
+
+#[test]
+fn test_empty_merge_straddling_boundary_keeps_geometry_without_content() {
+    let mut merged = cell("");
+    merged.col_span = 2;
+    merged.content.clear();
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), merged, cell("D")],
+            height: None,
+        }],
+    );
+
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("an empty merge has no visible text flow to lose");
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].table.rows[0].cells[1].col_span, 1);
+    assert_eq!(pages[1].table.rows[0].cells[0].col_span, 1);
+    assert!(pages[0].table.rows[0].cells[1].content.is_empty());
+    assert!(pages[1].table.rows[0].cells[0].content.is_empty());
+}
+
+#[test]
+fn test_centered_merge_straddling_boundary_refuses_before_slicing() {
+    let mut centered = cell("CENTERED");
+    centered.col_span = 2;
+    centered.spill_width = Some(300.0);
+    let Block::Paragraph(paragraph) = &mut centered.content[0] else {
+        unreachable!()
+    };
+    paragraph.style.alignment = Some(crate::ir::Alignment::Center);
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), centered, cell("D")],
+            height: None,
+        }],
+    );
+    let error =
+        ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+            .expect_err("centred continuation geometry is not proved");
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "merged cell across a horizontal page break"
+    ));
+}
+
+#[test]
+fn test_centered_merge_whose_ink_fits_first_window_keeps_its_original_seat() {
+    let mut centered = cell("1");
+    centered.col_span = 5;
+    centered.spill_width = Some(250.0);
+    let Block::Paragraph(paragraph) = &mut centered.content[0] else {
+        unreachable!()
+    };
+    paragraph.style.alignment = Some(crate::ir::Alignment::Center);
+    let page = make_page(
+        vec![50.0; 12],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![
+                cell("A"),
+                cell("B"),
+                cell("C"),
+                cell("D"),
+                centered,
+                cell("J"),
+                cell("K"),
+                cell("L"),
+            ],
+            height: None,
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("the centered glyph remains wholly inside page 1");
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+    assert_eq!(pages.len(), 2);
+    let first_fragment = &pages[0].table.rows[0].cells[4];
+    assert_eq!(cell_text(first_fragment), "1");
+    assert_eq!(first_fragment.padding.expect("adjusted inset").left, 55.0);
+    assert!(cell_text(&pages[1].table.rows[0].cells[0]).is_empty());
+}
+
+#[test]
+fn test_merge_inside_one_column_group_remains_supported() {
+    let merged = TableCell {
+        col_span: 2,
+        ..cell("MERGED")
+    };
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![merged, cell("C"), cell("D")],
+            height: None,
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("a merge contained within page 1 remains supported");
+}
+
+#[test]
+fn test_fit_to_width_keeps_full_width_merge_supported() {
+    let merged = TableCell {
+        col_span: 4,
+        ..cell("MERGED")
+    };
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![merged],
+            height: Some(20.0),
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, fit_to_width(1), true)
+        .expect("fit-to-width removes the horizontal page break");
+}
+
+#[test]
+fn test_repeated_title_width_is_part_of_merge_boundary_detection() {
+    // Page 1 carries columns 0-3. Repeating column 0 leaves room for only
+    // columns 4-6 on page 2, so the merge over columns 6-7 crosses onto page 3.
+    let merge = TableCell {
+        col_span: 2,
+        ..cell("MERGED")
+    };
+    let page = make_page(
+        vec![100.0; 8],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![
+                cell("A"),
+                cell("B"),
+                cell("C"),
+                cell("D"),
+                cell("E"),
+                cell("F"),
+                merge,
+            ],
+            height: None,
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("without repeated titles the merge stays inside page 2");
+    let error = ensure_supported_horizontal_merged_cell_flow(
+        &page,
+        Some((0, 1)),
+        SheetFit::default(),
+        true,
+    )
+    .expect_err("the repeated title must move the later boundary into the merge");
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "merged cell across a horizontal page break"
+    ));
+}
+
+#[test]
+fn test_prior_rowspan_preserves_later_cell_column_positions() {
+    let upper = TableCell {
+        col_span: 2,
+        row_span: 2,
+        ..cell("UPPER")
+    };
+    let lower = TableCell {
+        col_span: 2,
+        ..cell("LOWER")
+    };
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![
+            TableRow {
+                minimum_height: None,
+                cells: vec![upper, cell("C"), cell("D")],
+                height: None,
+            },
+            TableRow {
+                minimum_height: None,
+                cells: vec![lower],
+                height: None,
+            },
+        ],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("the lower merge occupies columns 2-3 wholly inside page 2");
 }
 
 #[test]
@@ -237,8 +526,8 @@ fn test_merge_spill_width_is_clamped_to_the_column_group() {
 
     // Page 1 keeps two of the four merged columns, so the line may run 300pt.
     assert_eq!(pages[0].table.rows[0].cells[0].spill_width, Some(300.0));
-    // The continuation carries no content, so it claims no spill either.
-    assert_eq!(pages[1].table.rows[0].cells[0].spill_width, None);
+    // This short label fits page 1, leaving an empty continuation.
+    assert!(cell_text(&pages[1].table.rows[0].cells[0]).is_empty());
 }
 
 #[test]
@@ -595,6 +884,42 @@ fn test_wide_sheet_preserves_every_printable_column_group() {
         .flat_map(|page| page.table.rows[0].cells.iter().map(cell_text))
         .collect();
     let expected_cells: Vec<String> = (0..100).map(|index| format!("c{index}")).collect();
+    assert_eq!(visible_cells, expected_cells);
+}
+
+#[test]
+fn oversized_column_does_not_widen_later_page_groups() {
+    // A single column wider than the paper must stay intact, but it must not
+    // become the packing width for ordinary columns that follow it. Otherwise
+    // those later columns are emitted past the physical page edge and their
+    // text disappears from selection.
+    let widths = [vec![1534.0], vec![100.0; 10]].concat();
+    let cells: Vec<TableCell> = (0..widths.len())
+        .map(|index| cell(&format!("c{index}")))
+        .collect();
+    let page = make_page(
+        widths,
+        vec![TableRow {
+            minimum_height: None,
+            cells,
+            height: None,
+        }],
+    );
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert_eq!(pages[0].table.column_widths, vec![1534.0]);
+    assert!(
+        pages[1..]
+            .iter()
+            .all(|page| page.table.column_widths.iter().sum::<f64>() <= 400.0)
+    );
+    let visible_cells: Vec<String> = pages
+        .iter()
+        .flat_map(|page| page.table.rows[0].cells.iter().map(cell_text))
+        .collect();
+    let expected_cells: Vec<String> = (0..11).map(|index| format!("c{index}")).collect();
     assert_eq!(visible_cells, expected_cells);
 }
 
