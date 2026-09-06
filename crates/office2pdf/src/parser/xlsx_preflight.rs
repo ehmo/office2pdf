@@ -2750,6 +2750,9 @@ mod tests {
         );
         validate_chart_xml(&language_metadata, "Budget")
             .expect("language metadata does not change rendered chart text");
+        let left_to_right_paragraph = base.replacen("<a:pPr>", "<a:pPr rtl=\"0\">", 1);
+        validate_chart_xml(&left_to_right_paragraph, "Budget")
+            .expect("an explicit left-to-right paragraph does not change rendered chart text");
         let script_defaults = base.replacen(
             "<a:defRPr sz=\"900\" b=\"0\" i=\"0\" u=\"none\" strike=\"noStrike\" kern=\"1200\" baseline=\"0\"/>",
             "<a:defRPr sz=\"900\" b=\"0\" i=\"0\" u=\"none\" strike=\"noStrike\" kern=\"1200\" baseline=\"0\"><a:ea typeface=\"+mn-ea\"/><a:cs typeface=\"+mn-cs\"/></a:defRPr>",
@@ -2781,6 +2784,10 @@ mod tests {
             ),
             (
                 base.replacen("baseline=\"0\"", "baseline=\"25000\"", 1),
+                "text formatting",
+            ),
+            (
+                base.replacen("<a:pPr>", "<a:pPr rtl=\"1\">", 1),
                 "text formatting",
             ),
             (
@@ -2856,6 +2863,11 @@ mod tests {
     fn chart_preflight_rejects_series_order_marker_and_style_changes_it_does_not_draw() {
         let base = r#"<c:chartSpace xmlns:c="urn:c"><c:style val="2"/><c:chart><c:plotArea><c:lineChart><c:marker val="1"/><c:ser><c:idx val="0"/><c:order val="0"/><c:marker><c:symbol val="circle"/><c:size val="5"/></c:marker><c:cat><c:strLit><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="1"><c:v>B</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:val></c:ser></c:lineChart><c:catAx><c:axPos val="b"/></c:catAx><c:valAx><c:axPos val="l"/><c:crossBetween val="between"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#;
         validate_chart_xml(base, "Budget").expect("the rendered defaults are admitted");
+        for size in ["2", "6", "9", "72"] {
+            let xml = base.replace("size val=\"5\"", &format!("size val=\"{size}\""));
+            validate_chart_xml(&xml, "Budget")
+                .unwrap_or_else(|error| panic!("marker size {size} must be rendered: {error}"));
+        }
 
         for (xml, detail) in [
             (
@@ -2867,7 +2879,11 @@ mod tests {
                 "marker symbol",
             ),
             (
-                base.replace("size val=\"5\"", "size val=\"9\""),
+                base.replace("size val=\"5\"", "size val=\"1\""),
+                "marker size",
+            ),
+            (
+                base.replace("size val=\"5\"", "size val=\"73\""),
                 "marker size",
             ),
             (
@@ -4242,13 +4258,19 @@ fn chart_text_attributes_supported(
     let parent = ancestors.last().map(Vec::as_slice);
     if !matches!(name.as_ref(), b"bodyPr" | b"defRPr" | b"rPr") {
         let supported = match name.as_ref() {
-            b"lstStyle" | b"p" | b"pPr" | b"r" | b"solidFill" => {
-                element.attributes().all(|attribute| {
-                    attribute.is_ok_and(|attribute| {
-                        chart_namespace_attribute_supported(reader, &attribute)
-                    })
+            b"lstStyle" | b"p" | b"r" | b"solidFill" => element.attributes().all(|attribute| {
+                attribute
+                    .is_ok_and(|attribute| chart_namespace_attribute_supported(reader, &attribute))
+            }),
+            b"pPr" => element.attributes().all(|attribute| {
+                attribute.is_ok_and(|attribute| {
+                    chart_namespace_attribute_supported(reader, &attribute)
+                        || (attribute.key.local_name().as_ref() == b"rtl"
+                            && attribute
+                                .decode_and_unescape_value(reader.decoder())
+                                .is_ok_and(|value| matches!(value.as_ref(), "0" | "false" | "off")))
                 })
-            }
+            }),
             b"t" => element.attributes().all(|attribute| {
                 attribute.is_ok_and(|attribute| {
                     chart_namespace_attribute_supported(reader, &attribute)
@@ -5149,7 +5171,10 @@ impl ChartPreflightScan {
                 }
             }
             b"size" if parent == Some(b"marker") && self.current_series.is_some() => {
-                if chart_exact_attribute(reader, element, b"val").as_deref() != Some("5") {
+                if !chart_exact_attribute(reader, element, b"val")
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .is_some_and(|size| (2..=72).contains(&size))
+                {
                     return Err(chart_detail(sheet_name, "marker size"));
                 }
             }

@@ -460,11 +460,19 @@ fn write_series_marker(
     out: &mut String,
     series_index: usize,
     symbol: Option<MarkerSymbol>,
+    size_pt: Option<f64>,
     x: f64,
     y: f64,
     color: &str,
 ) {
-    out.push_str(&series_marker_markup(series_index, symbol, x, y, color));
+    out.push_str(&series_marker_markup(
+        series_index,
+        symbol,
+        size_pt,
+        x,
+        y,
+        color,
+    ));
 }
 
 /// The `#place`d markup for one series marker centred on (`x`, `y`), and the
@@ -475,11 +483,12 @@ fn write_series_marker(
 fn series_marker_markup(
     series_index: usize,
     symbol: Option<MarkerSymbol>,
+    size_pt: Option<f64>,
     x: f64,
     y: f64,
     color: &str,
 ) -> String {
-    let size: f64 = SERIES_MARKER_SIZE_PT;
+    let size: f64 = size_pt.unwrap_or(SERIES_MARKER_SIZE_PT);
     let half: f64 = size / 2.0;
     let left: String = format_f64(x - half);
     let top: String = format_f64(y - half);
@@ -547,13 +556,14 @@ fn plots_as_line(chart: &Chart, series: &crate::ir::ChartSeries) -> bool {
 /// The whole series, not just its symbol, because the sample has to match the
 /// weight the line is plotted at as well (issue #1113).
 fn line_legend_key(series_index: usize, series: &crate::ir::ChartSeries, color: &str) -> String {
-    let key_mid: f64 = SERIES_MARKER_SIZE_PT / 2.0;
+    let marker_size: f64 = series.marker_size_pt.unwrap_or(SERIES_MARKER_SIZE_PT);
+    let key_mid: f64 = marker_size / 2.0;
     format!(
         "#box(width: {}pt, height: {}pt, baseline: {}pt)[\
          #place(top + left, dx: 0pt, dy: {}pt, line(end: ({}pt, 0pt), stroke: {}pt + {color}))\
          {}]",
         format_f64(LEGEND_KEY_LEN_PT),
-        format_f64(SERIES_MARKER_SIZE_PT),
+        format_f64(marker_size),
         format_f64(LEGEND_KEY_BASELINE_PT),
         format_f64(key_mid),
         format_f64(LEGEND_KEY_LEN_PT),
@@ -561,6 +571,7 @@ fn line_legend_key(series_index: usize, series: &crate::ir::ChartSeries, color: 
         series_marker_markup(
             series_index,
             series.marker_symbol,
+            series.marker_size_pt,
             LEGEND_KEY_LEN_PT / 2.0,
             key_mid,
             color
@@ -4061,7 +4072,15 @@ fn generate_chart_axis(
             );
         }
         for (x, y) in &points {
-            write_series_marker(out, s_index, s.marker_symbol, *x, *y, &color);
+            write_series_marker(
+                out,
+                s_index,
+                s.marker_symbol,
+                s.marker_size_pt,
+                *x,
+                *y,
+                &color,
+            );
         }
     }
 
@@ -4513,7 +4532,15 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         }
         // Point markers: the symbol the series names, else the shape cycle.
         for (x, y) in &points {
-            write_series_marker(out, s_index, s.marker_symbol, *x, *y, &color);
+            write_series_marker(
+                out,
+                s_index,
+                s.marker_symbol,
+                s.marker_size_pt,
+                *x,
+                *y,
+                &color,
+            );
         }
     }
 
@@ -4809,7 +4836,15 @@ fn generate_chart_radar_plot(out: &mut String, chart: &Chart, frame: Option<(f64
             format_f64(series_line_pt(series))
         );
         for (x, y) in &points {
-            write_series_marker(out, series_index, series.marker_symbol, *x, *y, &color);
+            write_series_marker(
+                out,
+                series_index,
+                series.marker_symbol,
+                series.marker_size_pt,
+                *x,
+                *y,
+                &color,
+            );
         }
     }
 

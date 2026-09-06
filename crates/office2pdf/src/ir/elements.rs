@@ -857,6 +857,11 @@ pub struct ChartSeries {
     /// does name one gets that symbol whatever its index, which is what issue
     /// #1107 was: a fourth series declaring `circle` drew the cycle's cross.
     pub marker_symbol: Option<MarkerSymbol>,
+    /// Diameter of the point marker, in points, from `<c:marker><c:size>`.
+    ///
+    /// `None` uses the OOXML default of 5pt. The schema admits integer sizes
+    /// from 2 through 72; XLSX preflight rejects values outside that range.
+    pub marker_size_pt: Option<f64>,
     /// Weight of the stroke this series is plotted with, from its own
     /// `<c:spPr><a:ln w="…"/>`, in points.
     ///

@@ -1278,6 +1278,7 @@ fn parse_single_series(
         std::collections::BTreeMap::new();
     let mut number_format: Option<String> = None;
     let mut marker_symbol: Option<MarkerSymbol> = None;
+    let mut marker_size_pt: Option<f64> = None;
     let mut line_width_pt: Option<f64> = None;
 
     loop {
@@ -1306,7 +1307,7 @@ fn parse_single_series(
                 }
                 // Consumed whole for the same reason as `<c:dLbls>`: the
                 // marker carries an `<c:spPr>` for the symbol's own fill.
-                b"marker" => marker_symbol = parse_series_marker(reader),
+                b"marker" => (marker_symbol, marker_size_pt) = parse_series_marker(reader),
                 // Consumed whole: `<c:dLbls>` carries an `<c:spPr>` of its
                 // own for the label box, which would otherwise be read as the
                 // series fill.
@@ -1344,6 +1345,7 @@ fn parse_single_series(
             // series was read inside (issue #1067).
             plot_type: None,
             marker_symbol,
+            marker_size_pt,
             line_width_pt,
         },
         categories,
@@ -1433,7 +1435,7 @@ fn data_label_position_for(value: &str) -> Option<DataLabelPosition> {
     }
 }
 
-/// Read a `<c:ser><c:marker>` into the point symbol it names.
+/// Read a `<c:ser><c:marker>` into its point symbol and diameter in points.
 ///
 /// Consumed whole whether or not it names one this renderer draws: the element
 /// carries an `<c:spPr>` for the symbol's own fill, which the flat series loop
@@ -1442,8 +1444,9 @@ fn data_label_position_for(value: &str) -> Option<DataLabelPosition> {
 /// The `<c:marker val="1"/>` that sits beside the `<c:ser>` elements of a
 /// `<c:lineChart>` is a different element — `CT_Boolean`, saying whether the
 /// family shows markers at all — and never reaches here, being empty.
-fn parse_series_marker(reader: &mut Reader<&[u8]>) -> Option<MarkerSymbol> {
+fn parse_series_marker(reader: &mut Reader<&[u8]>) -> (Option<MarkerSymbol>, Option<f64>) {
     let mut symbol: Option<MarkerSymbol> = None;
+    let mut size_pt: Option<f64> = None;
 
     loop {
         match reader.read_event() {
@@ -1454,13 +1457,21 @@ fn parse_series_marker(reader: &mut Reader<&[u8]>) -> Option<MarkerSymbol> {
                     .as_deref()
                     .and_then(marker_symbol_for);
             }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if e.local_name().as_ref() == b"size" =>
+            {
+                size_pt = xml_util::get_attr_str(e, b"val")
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .filter(|size| (2..=72).contains(size))
+                    .map(f64::from);
+            }
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"marker" => break,
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
 
-    symbol
+    (symbol, size_pt)
 }
 
 /// `<c:symbol val>` as ECMA-376 §21.2.3.29 `ST_MarkerStyle` names the symbols.

@@ -27,6 +27,7 @@ fn test_codegen_chart_bar_visual_bars() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -111,6 +112,7 @@ fn test_codegen_chart_axis_ticks_and_no_raw_floats() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -183,6 +185,7 @@ fn test_codegen_chart_pie_draws_a_pie() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -260,6 +263,7 @@ fn test_codegen_chart_line_trend_indicators() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -425,6 +429,7 @@ fn an_axis_chart_that_does_not_fit_moves_to_the_next_page_whole() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -495,6 +500,7 @@ fn a_bordered_chart_box_that_does_not_fit_moves_to_the_next_page_whole() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -709,6 +715,7 @@ fn test_codegen_chart_line_plot() {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -720,6 +727,7 @@ fn test_codegen_chart_line_plot() {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -796,6 +804,7 @@ fn a_chart_too_tall_for_a_page_still_breaks_rather_than_overflowing() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -871,6 +880,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -882,6 +892,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -893,6 +904,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -904,6 +916,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -1069,6 +1082,7 @@ fn legend_chart(position: LegendPosition) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -1080,6 +1094,7 @@ fn legend_chart(position: LegendPosition) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -1299,6 +1314,7 @@ fn a_declared_series_fill_reaches_the_bars() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -1367,6 +1383,7 @@ fn a_series_without_a_fill_still_takes_the_palette() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -1433,6 +1450,7 @@ fn per_point_fills_colour_each_bar_separately() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -1498,6 +1516,7 @@ fn axis_titled_chart(category: Option<&str>, value: Option<&str>) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -1649,6 +1668,7 @@ fn labelled_chart(labels: DataLabels) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Stacked,
@@ -1759,6 +1779,7 @@ fn pie_chart(values: Vec<f64>) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -1968,6 +1989,7 @@ fn test_chart_default_gridline_matches_powerpoint() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -2139,6 +2161,7 @@ fn tick_mark_chart(
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -2755,6 +2778,7 @@ fn band_layout_chart(
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             })
             .collect(),
@@ -3042,6 +3066,7 @@ fn two_series_bar_chart(theme_accent_colors: Vec<crate::ir::Color>) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -3053,6 +3078,7 @@ fn two_series_bar_chart(theme_accent_colors: Vec<crate::ir::Color>) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -3227,6 +3253,24 @@ fn a_declared_marker_symbol_outranks_the_shape_cycle() {
     assert_eq!(
         squares, 0,
         "no series may fall back to the cycle's square; got:\n{source}"
+    );
+}
+
+#[test]
+fn a_declared_marker_size_controls_plot_and_legend_markers() {
+    let mut chart = line_chart_with_markers([Some(MarkerSymbol::Circle), Some(MarkerSymbol::Off)]);
+    chart.series[0].marker_size_pt = Some(6.0);
+
+    let source = chart_source(chart);
+
+    assert_eq!(
+        source.matches("circle(radius: 3pt").count(),
+        4,
+        "the three plotted markers and the legend marker must use the declared 6pt diameter; got:\n{source}"
+    );
+    assert!(
+        !source.contains("circle(radius: 2.5pt"),
+        "the declared size must replace the 5pt default; got:\n{source}"
     );
 }
 
@@ -5486,6 +5530,7 @@ fn test_data_table_prints_a_series_number_format() {
             number_format: Some("0.0%".to_string()),
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -5553,6 +5598,7 @@ fn test_data_table_prints_a_declared_thousands_format() {
             number_format: Some("#,##0".to_string()),
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -5618,6 +5664,7 @@ fn test_data_table_without_a_number_format_prints_plainly() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -5682,6 +5729,7 @@ fn test_a_currency_axis_label_is_escaped() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -5748,6 +5796,7 @@ fn single_series_chart(auto_title_deleted: bool) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
@@ -5835,6 +5884,7 @@ fn automatic_title_chart(series_names: &[Option<&str>], auto_title_deleted: bool
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             })
             .collect(),
@@ -6620,6 +6670,7 @@ fn combo_budget_chart() -> Chart {
         number_format: None,
         plot_type: None,
         marker_symbol: None,
+        marker_size_pt: None,
         line_width_pt: None,
     };
     Chart {
@@ -6639,6 +6690,7 @@ fn combo_budget_chart() -> Chart {
                 number_format: None,
                 plot_type: Some(ChartType::Line),
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -6834,6 +6886,7 @@ fn combo_line_and_scatter_chart() -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: Some(MarkerSymbol::Off),
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -6845,6 +6898,7 @@ fn combo_line_and_scatter_chart() -> Chart {
                 number_format: None,
                 plot_type: Some(ChartType::Scatter),
                 marker_symbol: Some(MarkerSymbol::Circle),
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],

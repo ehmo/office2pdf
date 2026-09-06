@@ -620,6 +620,7 @@ fn test_a_series_marker_symbol_is_read() {
     let chart = parse_chart_xml(&xml, &SchemeColors::empty()).unwrap();
 
     assert_eq!(chart.series[0].marker_symbol, Some(MarkerSymbol::Circle));
+    assert_eq!(chart.series[0].marker_size_pt, Some(5.0));
 }
 
 #[test]
