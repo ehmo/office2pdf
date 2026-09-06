@@ -268,6 +268,38 @@ pub enum ChartHost {
 /// literal (issue #679).
 pub const RADAR_CHART_LABEL: &str = "Radar Chart";
 
+/// A second value axis used by one or more series in a combo chart.
+///
+/// Excel represents a column-and-line chart with an independent right scale
+/// as two reciprocal category/value axis pairs. The primary pair keeps the
+/// fields on [`Chart`]; this structure preserves the right value axis and the
+/// series that read against it.
+#[derive(Debug, Clone)]
+pub struct ChartSecondaryValueAxis {
+    /// Indices into [`Chart::series`] whose values use this scale.
+    pub series_indices: Vec<usize>,
+    /// Title printed vertically beside the right axis.
+    pub title: Option<String>,
+    /// Run properties declared by the right-axis title.
+    pub title_text_style: ChartTextStyle,
+    /// Run properties declared by the right-axis tick labels.
+    pub text_style: ChartTextStyle,
+    /// How the right axis prints its tick labels.
+    pub number_format: Option<String>,
+    /// Where the right axis puts its major tick marks.
+    pub major_tick_mark: AxisTickMark,
+    /// What the right axis says about its own line.
+    pub line: ChartLine,
+    /// Explicit tick interval, if one is stated.
+    pub major_unit: Option<f64>,
+    /// Explicit lower bound, if one is stated.
+    pub min: Option<f64>,
+    /// Explicit upper bound, if one is stated.
+    pub max: Option<f64>,
+    /// Whether the right axis is switched off.
+    pub deleted: bool,
+}
+
 /// A chart extracted from an embedded chart object.
 #[derive(Debug, Clone)]
 pub struct Chart {
@@ -389,6 +421,9 @@ pub struct Chart {
     /// `<c:valAx><c:numFmt formatCode>` — how the value axis prints its tick
     /// labels. Outranks a series' cache format for the axis (issue #865).
     pub value_axis_number_format: Option<String>,
+    /// Independent right-side scale for the named combo-chart series.
+    /// `None` keeps every series on the primary value axis.
+    pub secondary_value_axis: Option<ChartSecondaryValueAxis>,
     /// `<c:autoTitleDeleted val="1"/>` — the chart declines the automatic
     /// title Office would otherwise supply: its single series' name, or the
     /// placeholder printed when nothing names one (issues #883 and #1146).

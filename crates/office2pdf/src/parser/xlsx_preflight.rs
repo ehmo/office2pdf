@@ -2916,6 +2916,84 @@ mod tests {
     }
 
     #[test]
+    fn chart_preflight_accepts_a_column_line_combo_with_a_reciprocal_right_axis() {
+        let chart = r#"<c:chartSpace xmlns:c="urn:c"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>12</c:v></c:pt><c:pt idx="1"><c:v>19</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:lineChart><c:grouping val="standard"/><c:marker val="1"/><c:ser><c:idx val="1"/><c:order val="1"/><c:marker><c:symbol val="square"/><c:size val="6"/></c:marker><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>1500</c:v></c:pt><c:pt idx="1"><c:v>2900</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="3"/><c:axId val="4"/></c:lineChart><c:catAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:axPos val="l"/><c:crossAx val="1"/><c:crossBetween val="between"/></c:valAx><c:valAx><c:axId val="4"/><c:axPos val="r"/><c:crossAx val="3"/><c:crossBetween val="between"/><c:title><c:tx><c:rich><a:bodyPr xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" rot="-5400000"/><a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>Target</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx><c:catAx><c:axId val="3"/><c:axPos val="b"/><c:crossAx val="4"/></c:catAx></c:plotArea></c:chart></c:chartSpace>"#;
+        let chart = chart.replace(
+            r#"<c:axPos val="r"/><c:crossAx val="3"/>"#,
+            r#"<c:axPos val="r"/><c:crossAx val="3"/><c:crosses val="max"/>"#,
+        ).replace(
+            r#"<c:catAx><c:axId val="3"/><c:axPos val="b"/><c:crossAx val="4"/></c:catAx>"#,
+            r#"<c:catAx><c:axId val="3"/><c:delete val="1"/><c:axPos val="b"/><c:tickLblPos val="none"/><c:crossAx val="4"/></c:catAx>"#,
+        );
+
+        validate_chart_xml(&chart, "Budget")
+            .expect("the renderer draws the line against its own right-axis scale");
+
+        for (name, malformed) in [
+            (
+                "crossed right pair",
+                chart.replace(
+                    r#"<c:axPos val="r"/><c:crossAx val="3"/>"#,
+                    r#"<c:axPos val="r"/><c:crossAx val="1"/>"#,
+                ),
+            ),
+            (
+                "line rebound to the primary pair",
+                chart.replace(
+                    r#"<c:axId val="3"/><c:axId val="4"/></c:lineChart>"#,
+                    r#"<c:axId val="1"/><c:axId val="2"/></c:lineChart>"#,
+                ),
+            ),
+            (
+                "duplicate left value axis",
+                chart.replacen(r#"<c:axPos val="r"/>"#, r#"<c:axPos val="l"/>"#, 1),
+            ),
+            (
+                "primary value axis crossing at maximum",
+                chart.replace(
+                    r#"<c:axPos val="l"/><c:crossAx val="1"/>"#,
+                    r#"<c:axPos val="l"/><c:crossAx val="1"/><c:crosses val="max"/>"#,
+                ),
+            ),
+            (
+                "visible secondary category axis",
+                chart.replace(r#"<c:delete val="1"/>"#, ""),
+            ),
+            (
+                "hidden secondary value tick labels",
+                chart.replace(
+                    r#"<c:axPos val="r"/><c:crossAx val="3"/>"#,
+                    r#"<c:axPos val="r"/><c:tickLblPos val="none"/><c:crossAx val="3"/>"#,
+                ),
+            ),
+            (
+                "hidden secondary value axis",
+                chart.replace(
+                    r#"<c:axPos val="r"/><c:crossAx val="3"/>"#,
+                    r#"<c:delete val="1"/><c:axPos val="r"/><c:crossAx val="3"/>"#,
+                ),
+            ),
+            (
+                "hidden primary category tick labels",
+                chart.replacen(
+                    r#"<c:axPos val="b"/>"#,
+                    r#"<c:axPos val="b"/><c:tickLblPos val="none"/>"#,
+                    1,
+                ),
+            ),
+            (
+                "horizontal bar with a right value axis",
+                chart.replacen(r#"<c:barDir val="col"/>"#, r#"<c:barDir val="bar"/>"#, 1),
+            ),
+        ] {
+            assert!(
+                validate_chart_xml(&malformed, "Budget").is_err(),
+                "{name} must fail closed"
+            );
+        }
+    }
+
+    #[test]
     fn chart_preflight_rejects_collapsed_cache_gaps_and_unmodelled_axes() {
         let gapped = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="2"><c:v>C</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart><c:catAx/><c:valAx/></c:plotArea></c:chart></c:chartSpace>"#;
         assert_unsupported(
@@ -4302,9 +4380,9 @@ fn validate_chart_element(
             value().as_deref(),
             Some("ctr" | "outEnd" | "inEnd" | "inBase")
         ),
-        b"axPos" => !matches!(value().as_deref(), Some("b" | "l")),
-        b"tickLblPos" => !matches!(value().as_deref(), Some("nextTo" | "low")),
-        b"crosses" => !empty_or(&|value| value.as_deref() == Some("autoZero")),
+        b"axPos" => !matches!(value().as_deref(), Some("b" | "l" | "r")),
+        b"tickLblPos" => !matches!(value().as_deref(), Some("nextTo" | "low" | "none")),
+        b"crosses" => !empty_or(&|value| matches!(value.as_deref(), Some("autoZero" | "max"))),
         b"crossBetween" => !matches!(value().as_deref(), Some("between" | "midCat")),
         b"dispBlanksAs" => !empty_or(&|value| value.as_deref() == Some("gap")),
         b"date1904" => !empty_or(&|value| false_value(value)),
@@ -4943,12 +5021,23 @@ fn validate_series_shape_element(
 }
 
 #[derive(Default)]
+struct CategoryAxisPreflight {
+    id: Option<u64>,
+    cross_axis_id: Option<u64>,
+    deleted: bool,
+    tick_labels_none: bool,
+}
+
+#[derive(Default)]
 struct ValueAxisPreflight {
     position: Option<String>,
     has_min: bool,
     has_max: bool,
     has_major_unit: bool,
     has_non_general_number_format: bool,
+    crosses_at_maximum: bool,
+    deleted: bool,
+    tick_labels_none: bool,
 }
 
 impl ValueAxisPreflight {
@@ -4968,6 +5057,7 @@ struct ChartPreflightScan {
     cat_axis_positions: Vec<String>,
     val_axis_positions: Vec<String>,
     cross_between: Vec<String>,
+    category_axis_crosses_at_maximum: bool,
     line_family_seen: bool,
     scatter_family_seen: bool,
     scatter_family_count: usize,
@@ -4995,10 +5085,14 @@ struct ChartPreflightScan {
     rich_paragraphs: usize,
     current_family_axis_ids: Option<Vec<u64>>,
     family_axis_ids: Vec<Vec<u64>>,
+    current_family_name: Option<Vec<u8>>,
+    family_names: Vec<Vec<u8>>,
     category_axis_ids: Vec<u64>,
     value_axis_ids: Vec<u64>,
     category_cross_axis_ids: Vec<u64>,
     value_cross_axis_ids: Vec<u64>,
+    current_category_axis: Option<CategoryAxisPreflight>,
+    category_axis_details: Vec<CategoryAxisPreflight>,
     current_value_axis: Option<ValueAxisPreflight>,
     value_axis_details: Vec<ValueAxisPreflight>,
     child_frames: Vec<HashSet<Vec<u8>>>,
@@ -5056,6 +5150,7 @@ impl ChartPreflightScan {
                     return Err(chart_detail(sheet_name, "nested chart family"));
                 }
                 self.current_family_axis_ids = Some(Vec::new());
+                self.current_family_name = Some(name.to_vec());
                 self.line_family_seen |= name == b"lineChart";
                 self.scatter_family_seen |= name == b"scatterChart";
                 if name == b"scatterChart" {
@@ -5219,7 +5314,13 @@ impl ChartPreflightScan {
                     return Err(chart_detail(sheet_name, "varyColors"));
                 }
             }
-            b"catAx" => self.cat_axes += 1,
+            b"catAx" => {
+                self.cat_axes += 1;
+                if self.current_category_axis.is_some() {
+                    return Err(chart_detail(sheet_name, "nested category axis"));
+                }
+                self.current_category_axis = Some(CategoryAxisPreflight::default());
+            }
             b"valAx" => {
                 self.val_axes += 1;
                 if self.current_value_axis.is_some() {
@@ -5234,7 +5335,13 @@ impl ChartPreflightScan {
                     return Err(chart_detail(sheet_name, "axis identifier"));
                 };
                 match parent {
-                    Some(b"catAx") => self.category_axis_ids.push(value),
+                    Some(b"catAx") => {
+                        self.category_axis_ids.push(value);
+                        let Some(axis) = self.current_category_axis.as_mut() else {
+                            return Err(chart_detail(sheet_name, "axis identifier"));
+                        };
+                        axis.id = Some(value);
+                    }
                     Some(b"valAx") => self.value_axis_ids.push(value),
                     _ => {
                         let Some(ids) = self.current_family_axis_ids.as_mut() else {
@@ -5251,7 +5358,13 @@ impl ChartPreflightScan {
                     return Err(chart_detail(sheet_name, "axis crossing"));
                 };
                 match parent {
-                    Some(b"catAx") => self.category_cross_axis_ids.push(value),
+                    Some(b"catAx") => {
+                        self.category_cross_axis_ids.push(value);
+                        let Some(axis) = self.current_category_axis.as_mut() else {
+                            return Err(chart_detail(sheet_name, "axis crossing"));
+                        };
+                        axis.cross_axis_id = Some(value);
+                    }
                     Some(b"valAx") => self.value_cross_axis_ids.push(value),
                     _ => return Err(chart_detail(sheet_name, "axis crossing")),
                 }
@@ -5344,6 +5457,40 @@ impl ChartPreflightScan {
                     axis.position = Some(position);
                 }
             }
+            b"delete" => match parent {
+                Some(b"catAx") => {
+                    let Some(axis) = self.current_category_axis.as_mut() else {
+                        return Err(chart_detail(sheet_name, "category axis visibility"));
+                    };
+                    axis.deleted = true_value(chart_exact_attribute(reader, element, b"val"));
+                }
+                Some(b"valAx") => {
+                    let Some(axis) = self.current_value_axis.as_mut() else {
+                        return Err(chart_detail(sheet_name, "value axis visibility"));
+                    };
+                    axis.deleted = true_value(chart_exact_attribute(reader, element, b"val"));
+                }
+                _ => {}
+            },
+            b"tickLblPos" => {
+                let labels_none =
+                    chart_exact_attribute(reader, element, b"val").as_deref() == Some("none");
+                match parent {
+                    Some(b"catAx") => {
+                        let Some(axis) = self.current_category_axis.as_mut() else {
+                            return Err(chart_detail(sheet_name, "category tick labels"));
+                        };
+                        axis.tick_labels_none = labels_none;
+                    }
+                    Some(b"valAx") => {
+                        let Some(axis) = self.current_value_axis.as_mut() else {
+                            return Err(chart_detail(sheet_name, "value tick labels"));
+                        };
+                        axis.tick_labels_none = labels_none;
+                    }
+                    _ => {}
+                }
+            }
             b"min" if ancestors.iter().any(|name| name == b"valAx") => {
                 let Some(axis) = self.current_value_axis.as_mut() else {
                     return Err(chart_detail(sheet_name, "axis scaling"));
@@ -5369,6 +5516,22 @@ impl ChartPreflightScan {
                 axis.has_non_general_number_format = chart_drawing_attributes(reader, element)
                     .and_then(|attributes| attributes.get(b"formatCode".as_slice()).cloned())
                     .is_some_and(|code| !code.trim().eq_ignore_ascii_case("General"));
+            }
+            b"crosses" => {
+                let at_maximum =
+                    chart_exact_attribute(reader, element, b"val").as_deref() == Some("max");
+                match parent {
+                    Some(b"catAx") => {
+                        self.category_axis_crosses_at_maximum |= at_maximum;
+                    }
+                    Some(b"valAx") => {
+                        let Some(axis) = self.current_value_axis.as_mut() else {
+                            return Err(chart_detail(sheet_name, "axis crossing"));
+                        };
+                        axis.crosses_at_maximum |= at_maximum;
+                    }
+                    _ => return Err(chart_detail(sheet_name, "axis crossing")),
+                }
             }
             b"crossBetween" => {
                 let Some(value) = chart_exact_attribute(reader, element, b"val") else {
@@ -5439,6 +5602,10 @@ impl ChartPreflightScan {
                 return Err(chart_detail(sheet_name, "chart family axes"));
             };
             self.family_axis_ids.push(ids);
+            let Some(name) = self.current_family_name.take() else {
+                return Err(chart_detail(sheet_name, "chart family axes"));
+            };
+            self.family_names.push(name);
         }
         if name == b"rich" {
             self.rich_text_open = false;
@@ -5479,6 +5646,12 @@ impl ChartPreflightScan {
         }
         if name == b"ser" {
             self.current_series = None;
+        }
+        if name == b"catAx" {
+            let Some(axis) = self.current_category_axis.take() else {
+                return Err(chart_detail(sheet_name, "category axis structure"));
+            };
+            self.category_axis_details.push(axis);
         }
         if name == b"valAx" {
             let Some(axis) = self.current_value_axis.take() else {
@@ -5555,6 +5728,9 @@ fn chart_axis_topology_is_valid(scan: &ChartPreflightScan) -> bool {
             ids.len() == 2 && ids.contains(first) && ids.contains(second) && ids[0] != ids[1]
         });
     }
+    if chart_has_supported_secondary_axis(scan) {
+        return true;
+    }
     let ([category], [value], [category_cross], [value_cross]) = (
         scan.category_axis_ids.as_slice(),
         scan.value_axis_ids.as_slice(),
@@ -5572,6 +5748,106 @@ fn chart_axis_topology_is_valid(scan: &ChartPreflightScan) -> bool {
         }
         ids.len() == 2 && ids.contains(category) && ids.contains(value) && ids[0] != ids[1]
     })
+}
+
+/// The one dual-axis topology the renderer models: a primary column family on
+/// a bottom/left reciprocal pair and a line family on a separate bottom/right
+/// reciprocal pair.
+fn chart_has_supported_secondary_axis(scan: &ChartPreflightScan) -> bool {
+    if scan.scatter_family_seen
+        || scan.cat_axes != 2
+        || scan.val_axes != 2
+        || scan.category_axis_ids.len() != 2
+        || scan.value_axis_ids.len() != 2
+        || scan.category_cross_axis_ids.len() != 2
+        || scan.value_cross_axis_ids.len() != 2
+        || scan.category_axis_details.len() != 2
+        || scan.cat_axis_positions.as_slice() != ["b", "b"]
+        || scan.val_axis_positions.len() != 2
+        || !scan
+            .val_axis_positions
+            .iter()
+            .any(|position| position == "l")
+        || !scan
+            .val_axis_positions
+            .iter()
+            .any(|position| position == "r")
+        || scan.family_names.len() != 2
+        || scan.family_axis_ids.len() != 2
+    {
+        return false;
+    }
+
+    let mut all_ids = scan
+        .category_axis_ids
+        .iter()
+        .chain(&scan.value_axis_ids)
+        .copied()
+        .collect::<Vec<_>>();
+    all_ids.sort_unstable();
+    all_ids.dedup();
+    if all_ids.len() != 4 {
+        return false;
+    }
+
+    for (category_index, category_id) in scan.category_axis_ids.iter().enumerate() {
+        let value_id = scan.category_cross_axis_ids[category_index];
+        let Some(value_index) = scan
+            .value_axis_ids
+            .iter()
+            .position(|candidate| *candidate == value_id)
+        else {
+            return false;
+        };
+        if scan.value_cross_axis_ids[value_index] != *category_id {
+            return false;
+        }
+    }
+
+    let family_for = |name: &[u8]| {
+        scan.family_names
+            .iter()
+            .position(|candidate| candidate.as_slice() == name)
+    };
+    let (Some(bar_family), Some(line_family)) = (family_for(b"barChart"), family_for(b"lineChart"))
+    else {
+        return false;
+    };
+    if bar_family == line_family {
+        return false;
+    }
+    let Some(left_value_index) = scan
+        .val_axis_positions
+        .iter()
+        .position(|position| position == "l")
+    else {
+        return false;
+    };
+    let Some(right_value_index) = scan
+        .val_axis_positions
+        .iter()
+        .position(|position| position == "r")
+    else {
+        return false;
+    };
+    let left_value_id = scan.value_axis_ids[left_value_index];
+    let right_value_id = scan.value_axis_ids[right_value_index];
+    let left_category_id = scan.value_cross_axis_ids[left_value_index];
+    let right_category_id = scan.value_cross_axis_ids[right_value_index];
+    let Some(right_category_axis) = scan.category_axis_details.iter().find(|axis| {
+        axis.id == Some(right_category_id) && axis.cross_axis_id == Some(right_value_id)
+    }) else {
+        return false;
+    };
+    if !right_category_axis.deleted || scan.value_axis_details[right_value_index].deleted {
+        return false;
+    }
+    let matches_pair = |family_index: usize, category_id: u64, value_id: u64| {
+        let ids = &scan.family_axis_ids[family_index];
+        ids.len() == 2 && ids[0] != ids[1] && ids.contains(&category_id) && ids.contains(&value_id)
+    };
+    matches_pair(bar_family, left_category_id, left_value_id)
+        && matches_pair(line_family, right_category_id, right_value_id)
 }
 
 #[cfg(test)]
@@ -5659,8 +5935,11 @@ fn validate_chart_xml_with_hidden_sources(
     {
         return Err(chart_detail(sheet_name, "scatter x-axis settings"));
     }
+    let has_supported_secondary_axis = chart_has_supported_secondary_axis(&scan);
     let axis_count_is_invalid = if scan.scatter_family_seen {
         scan.cat_axes != 0 || scan.val_axes != 2
+    } else if has_supported_secondary_axis {
+        false
     } else {
         scan.cat_axes > 1 || scan.val_axes > 1
     };
@@ -5687,6 +5966,11 @@ fn validate_chart_xml_with_hidden_sources(
     let Some(chart) = crate::parser::chart::parse_chart_xml(xml, &scheme) else {
         return Err(chart_plot(sheet_name, "family"));
     };
+    if has_supported_secondary_axis
+        && (!matches!(chart.chart_type, ChartType::Column) || chart.secondary_value_axis.is_none())
+    {
+        return Err(chart_detail(sheet_name, "secondary value axis"));
+    }
     if scan.bad_data_point
         || scan
             .series_data_point_indices
@@ -5764,7 +6048,10 @@ fn validate_chart_xml_with_hidden_sources(
             &chart.value_axis_title,
             &chart.value_axis_title_text_style,
             -90.0,
-        )
+        ) || chart
+            .secondary_value_axis
+            .as_ref()
+            .is_some_and(|axis| !title_rotation_matches(&axis.title, &axis.title_text_style, -90.0))
     };
     let category_crossing_mismatch =
         if matches!(chart.chart_type, ChartType::Area | ChartType::Scatter) {
@@ -5772,7 +6059,20 @@ fn validate_chart_xml_with_hidden_sources(
         } else {
             scan.cross_between.iter().any(|value| value != "between")
         };
-    let axis_position_mismatch = if matches!(chart.chart_type, ChartType::Scatter) {
+    let axis_position_mismatch = if has_supported_secondary_axis {
+        scan.cat_axis_positions
+            .iter()
+            .any(|position| position != "b")
+            || scan.val_axis_positions.len() != 2
+            || !scan
+                .val_axis_positions
+                .iter()
+                .any(|position| position == "l")
+            || !scan
+                .val_axis_positions
+                .iter()
+                .any(|position| position == "r")
+    } else if matches!(chart.chart_type, ChartType::Scatter) {
         !scan.cat_axis_positions.is_empty()
             || scan.val_axis_positions.len() != 2
             || !scan
@@ -5792,10 +6092,25 @@ fn validate_chart_xml_with_hidden_sources(
                 .iter()
                 .any(|position| position != expected_val_axis)
     };
+    let maximum_axis_crossing_mismatch = scan.category_axis_crosses_at_maximum
+        || scan.value_axis_details.iter().any(|axis| {
+            axis.crosses_at_maximum
+                && !(has_supported_secondary_axis && axis.position.as_deref() == Some("r"))
+        });
+    let axis_tick_label_mismatch = scan
+        .category_axis_details
+        .iter()
+        .any(|axis| axis.tick_labels_none && !axis.deleted)
+        || scan
+            .value_axis_details
+            .iter()
+            .any(|axis| axis.tick_labels_none);
     if line_series_marker_mismatch
         || axis_title_orientation_mismatch
         || axis_position_mismatch
         || category_crossing_mismatch
+        || maximum_axis_crossing_mismatch
+        || axis_tick_label_mismatch
     {
         let detail = if line_series_marker_mismatch {
             "line marker visibility"
@@ -5803,6 +6118,10 @@ fn validate_chart_xml_with_hidden_sources(
             "text orientation"
         } else if axis_position_mismatch {
             "axis position"
+        } else if maximum_axis_crossing_mismatch {
+            "axis crossing"
+        } else if axis_tick_label_mismatch {
+            "axis tick labels"
         } else {
             "category crossing"
         };

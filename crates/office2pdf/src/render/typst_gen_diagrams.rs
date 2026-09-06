@@ -1346,6 +1346,25 @@ fn write_tick_left_of_plot(
     );
 }
 
+/// Stroke one major tick across the value axis on the plot's right edge.
+fn write_tick_right_of_plot(
+    out: &mut String,
+    plot_right: f64,
+    y: f64,
+    reach: (f64, f64),
+    stroke: &str,
+) {
+    let (outside, inside) = reach;
+    let _ = writeln!(
+        out,
+        "#place(top + left, dx: {}pt, dy: {}pt, line(end: ({}pt, 0pt), stroke: {}))",
+        format_f64(plot_right - inside),
+        format_f64(y),
+        format_f64(outside + inside),
+        stroke
+    );
+}
+
 const PLOT_MAIN: f64 = 300.0; // value-axis length in points
 pub(super) const ROW: f64 = 34.0; // per-category thickness
 pub(super) const LABEL_W: f64 = 62.0; // category label gutter
@@ -1781,7 +1800,11 @@ fn chart_axis_extent(chart: &Chart) -> (f64, f64) {
     let legend: LegendBox = axis_legend_box(chart);
     let (label_gutter_w, label_gutter_h) = axis_label_gutters(chart, None);
     (
-        label_gutter_w + plot_w + legend.left + legend.right,
+        label_gutter_w
+            + plot_w
+            + secondary_value_axis_gutter_pt(chart)
+            + legend.left
+            + legend.right,
         plot_h + label_gutter_h + legend.top + legend.bottom,
     )
 }
@@ -1898,8 +1921,33 @@ const MAX_AXIS_TICKS: usize = 1000;
 /// An end the part leaves out keeps the automatic one.
 fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     let data_min: f64 = chart_auto_min_value(chart);
+    resolved_value_scale(
+        data_min,
+        chart_auto_max_value(chart),
+        matches!(chart.grouping, ChartGrouping::PercentStacked),
+        chart.value_axis_major_unit,
+        chart.value_axis_min,
+        chart.value_axis_max,
+        auto_axis,
+    )
+}
+
+/// Resolve one value-axis interval from its data and stated settings.
+///
+/// Kept independent of [`Chart`] so a combo chart's right axis can use the
+/// same automatic-minimum and stated-bound rules without borrowing the
+/// primary series or primary axis settings.
+fn resolved_value_scale(
+    data_min: f64,
+    data_max: f64,
+    percent_stacked: bool,
+    major_unit: Option<f64>,
+    stated_min: Option<f64>,
+    stated_max: Option<f64>,
+    auto_axis: (f64, f64),
+) -> ValueScale {
     let automatic_minimum = |step: f64| {
-        if matches!(chart.grouping, ChartGrouping::PercentStacked) {
+        if percent_stacked {
             data_min
         } else {
             automatic_axis_minimum(data_min, step)
@@ -1910,11 +1958,7 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     // automatic maximum of zero, and a step chosen from that would tick the
     // axis once per unit.
     let auto_axis: (f64, f64) = if data_min < 0.0 {
-        let top: f64 = if chart_auto_max_value(chart) > 0.0 {
-            auto_axis.0
-        } else {
-            0.0
-        };
+        let top: f64 = if data_max > 0.0 { auto_axis.0 } else { 0.0 };
         let step: f64 = nice_axis(top - data_min).1;
         // Both ends of an axis crossing zero land on a whole unit, so the
         // maximum the positive half of the data chose is raised to one.
@@ -1922,13 +1966,11 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     } else {
         auto_axis
     };
-    let (auto_max, auto_step) = axis_with_stated_unit(auto_axis, chart.value_axis_major_unit);
+    let (auto_max, auto_step) = axis_with_stated_unit(auto_axis, major_unit);
 
     let stated = |bound: Option<f64>| bound.filter(|value| value.is_finite());
-    let stated_unit: Option<f64> = chart
-        .value_axis_major_unit
-        .filter(|unit| unit.is_finite() && *unit > 0.0);
-    let (stated_min, stated_max) = (stated(chart.value_axis_min), stated(chart.value_axis_max));
+    let stated_unit: Option<f64> = major_unit.filter(|unit| unit.is_finite() && *unit > 0.0);
+    let (stated_min, stated_max) = (stated(stated_min), stated(stated_max));
     let min: f64 = stated_min.unwrap_or_else(|| automatic_minimum(auto_step));
     let max: f64 = stated_max.unwrap_or(auto_max);
 
@@ -1955,6 +1997,31 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     }
 }
 
+/// Scale of an independent right value axis.
+fn chart_secondary_value_scale(
+    chart: &Chart,
+    axis: &crate::ir::ChartSecondaryValueAxis,
+) -> ValueScale {
+    let values = axis
+        .series_indices
+        .iter()
+        .filter_map(|index| chart.series.get(*index))
+        .flat_map(|series| series.values.iter().copied());
+    let (data_min, data_max) = values.fold((0.0_f64, 0.0_f64), |(min, max), value| {
+        (min.min(value), max.max(value))
+    });
+    let auto_axis = nice_axis(data_max);
+    resolved_value_scale(
+        data_min,
+        data_max,
+        false,
+        axis.major_unit,
+        axis.min,
+        axis.max,
+        auto_axis,
+    )
+}
+
 /// The automatic axis minimum for data reaching down to `data_min`.
 ///
 /// Zero unless the data goes below it, so every chart with no negative value
@@ -1977,17 +2044,25 @@ fn automatic_axis_minimum(data_min: f64, step: f64) -> f64 {
 /// their sum rather than the deepest single one. A line laid over the columns
 /// reads against the same axis and takes no part in any stack.
 fn chart_auto_min_value(chart: &Chart) -> f64 {
+    let on_secondary = |index: usize| {
+        chart
+            .secondary_value_axis
+            .as_ref()
+            .is_some_and(|axis| axis.series_indices.contains(&index))
+    };
     let overlaid: Vec<bool> = chart
         .series
         .iter()
-        .map(|series| plots_as_line(chart, series))
+        .enumerate()
+        .map(|(index, series)| plots_as_line(chart, series) && !on_secondary(index))
         .collect();
     let overlay_min: f64 = chart
         .series
         .iter()
         .zip(&overlaid)
-        .filter(|(_, is_line)| **is_line)
-        .flat_map(|(series, _)| series.values.iter())
+        .enumerate()
+        .filter(|(index, (_, is_line))| **is_line && !on_secondary(*index))
+        .flat_map(|(_, (series, _))| series.values.iter())
         .copied()
         .fold(0.0_f64, f64::min);
     match chart.grouping {
@@ -1996,7 +2071,9 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
         ChartGrouping::PercentStacked => chart
             .series
             .iter()
-            .flat_map(|series| series.values.iter())
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
             .any(|value| *value < 0.0)
             .then_some(-100.0)
             .unwrap_or(0.0),
@@ -2006,8 +2083,11 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
                     .series
                     .iter()
                     .zip(&overlaid)
-                    .filter(|(_, is_line)| !**is_line)
-                    .filter_map(|(series, _)| series.values.get(index).copied())
+                    .enumerate()
+                    .filter(|(series_index, (_, is_line))| {
+                        !**is_line && !on_secondary(*series_index)
+                    })
+                    .filter_map(|(_, (series, _))| series.values.get(index).copied())
                     .filter(|value| *value < 0.0)
                     .sum::<f64>()
             })
@@ -2015,7 +2095,9 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
         ChartGrouping::Clustered => chart
             .series
             .iter()
-            .flat_map(|series| series.values.iter())
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
             .copied()
             .fold(0.0_f64, f64::min),
     }
@@ -2029,17 +2111,25 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
 /// its category's total, so the axis must cover the tallest stack rather than
 /// the largest single segment.
 fn chart_auto_max_value(chart: &Chart) -> f64 {
+    let on_secondary = |index: usize| {
+        chart
+            .secondary_value_axis
+            .as_ref()
+            .is_some_and(|axis| axis.series_indices.contains(&index))
+    };
     let overlaid: Vec<bool> = chart
         .series
         .iter()
-        .map(|series| plots_as_line(chart, series))
+        .enumerate()
+        .map(|(index, series)| plots_as_line(chart, series) && !on_secondary(index))
         .collect();
     let overlay_max: f64 = chart
         .series
         .iter()
         .zip(&overlaid)
-        .filter(|(_, is_line)| **is_line)
-        .flat_map(|(series, _)| series.values.iter())
+        .enumerate()
+        .filter(|(index, (_, is_line))| **is_line && !on_secondary(*index))
+        .flat_map(|(_, (series, _))| series.values.iter())
         .copied()
         .fold(0.0_f64, f64::max);
     let bar_series = || {
@@ -2047,14 +2137,17 @@ fn chart_auto_max_value(chart: &Chart) -> f64 {
             .series
             .iter()
             .zip(&overlaid)
-            .filter(|(_, is_line)| !**is_line)
-            .map(|(series, _)| series)
+            .enumerate()
+            .filter(|(index, (_, is_line))| !**is_line && !on_secondary(*index))
+            .map(|(_, (series, _))| series)
     };
     match chart.grouping {
         ChartGrouping::PercentStacked => chart
             .series
             .iter()
-            .flat_map(|series| series.values.iter())
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
             .any(|value| *value > 0.0)
             .then_some(100.0)
             .unwrap_or(0.0),
@@ -2064,7 +2157,9 @@ fn chart_auto_max_value(chart: &Chart) -> f64 {
         ChartGrouping::Clustered => chart
             .series
             .iter()
-            .flat_map(|series| series.values.iter())
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
             .copied()
             .fold(0.0_f64, f64::max),
     }
@@ -2147,6 +2242,70 @@ fn chart_column_value_gutter_pt(chart: &Chart) -> f64 {
     }
     CHART_COLUMN_VALUE_GUTTER_PT
         + CHART_COLUMN_VALUE_GUTTER_EM * chart_axis_text_pt(chart, &chart.value_axis_text_style)
+}
+
+fn secondary_axis_number_format<'a>(
+    chart: &'a Chart,
+    axis: &'a crate::ir::ChartSecondaryValueAxis,
+) -> Option<&'a str> {
+    axis.number_format.as_deref().or_else(|| {
+        axis.series_indices
+            .iter()
+            .filter_map(|index| chart.series.get(*index))
+            .find_map(|series| series.number_format.as_deref())
+    })
+}
+
+fn secondary_value_axis_labels(
+    chart: &Chart,
+    axis: &crate::ir::ChartSecondaryValueAxis,
+) -> Vec<String> {
+    let number_format = secondary_axis_number_format(chart, axis);
+    chart_secondary_value_scale(chart, axis)
+        .ticks()
+        .into_iter()
+        .map(|tick| chart_value_label_formatted(tick, number_format))
+        .collect()
+}
+
+/// Width reserved to the right of a column plot for secondary tick labels.
+fn secondary_value_label_gutter_pt(chart: &Chart) -> f64 {
+    let Some(axis) = chart.secondary_value_axis.as_ref() else {
+        return 0.0;
+    };
+    if chart.text_style.size_pt.is_none() && axis.text_style.size_pt.is_none() {
+        return TICK_GAP + GAP;
+    }
+    let size_pt = chart_axis_text_pt(chart, &axis.text_style);
+    let bold = chart
+        .text_style
+        .resolved_bold(&axis.text_style)
+        .unwrap_or(false);
+    let family = chart_text_family(chart, &axis.text_style);
+    let widest = secondary_value_axis_labels(chart, axis)
+        .iter()
+        .filter_map(|label| chart_text_advance_em(family, bold, label))
+        .fold(0.0_f64, f64::max)
+        * size_pt;
+    let face_gap = chart_face_line_metrics_em(family, bold)
+        .map(|(ascent, descent)| {
+            (EXCEL_VALUE_LABEL_ASCENT_FRACTION * ascent
+                + EXCEL_VALUE_LABEL_DESCENT_FRACTION * descent)
+                * size_pt
+        })
+        .unwrap_or(GAP);
+    EXCEL_VALUE_LABEL_EDGE_PAD_PT + widest + face_gap
+}
+
+/// Total right-side chrome of an independent secondary value axis.
+fn secondary_value_axis_gutter_pt(chart: &Chart) -> f64 {
+    let Some(axis) = chart.secondary_value_axis.as_ref() else {
+        return 0.0;
+    };
+    secondary_value_label_gutter_pt(chart)
+        + axis.title.as_ref().map_or(0.0, |_| {
+            chart_axis_title_band_h(chart, &axis.title_text_style)
+        })
 }
 
 /// The box one vertical value tick label is right-aligned in, as
@@ -2704,7 +2863,10 @@ fn axis_plot_insets(chart: &Chart, frame: Option<(f64, f64)>) -> (f64, f64) {
             CHART_COLUMN_TOP_PAD_PT
                 + CHART_COLUMN_TOP_PAD_EM * chart_axis_text_pt(chart, &chart.value_axis_text_style)
         };
-        (top, CHART_COLUMN_RIGHT_PAD_PT)
+        (
+            top,
+            CHART_COLUMN_RIGHT_PAD_PT + secondary_value_axis_gutter_pt(chart),
+        )
     } else {
         (0.0, 0.0)
     }
@@ -3799,6 +3961,10 @@ fn generate_chart_axis(
     // `<c:scaling><c:min>`/`<c:max>` fixes it; otherwise it is the automatic
     // scale, which reaches below zero only when the data does (issue #1184).
     let scale: ValueScale = chart_value_scale(chart, auto_axis);
+    let secondary_scale: Option<ValueScale> = chart
+        .secondary_value_axis
+        .as_ref()
+        .map(|axis| chart_secondary_value_scale(chart, axis));
     // Where the value-zero line lands across the plot: the baseline the bars
     // grow from, and the line the category axis stands on.
     let zero_frac: f64 = scale.zero_fraction();
@@ -3899,6 +4065,37 @@ fn generate_chart_axis(
                     ))
                 );
             }
+        }
+    }
+
+    // An independent right value axis labels only the line family bound to
+    // it. It does not add a second gridline set; the primary grid remains the
+    // plot's visual ruler while the right labels expose the line's own scale.
+    if !horizontal
+        && let (Some(axis), Some(secondary_scale)) =
+            (chart.secondary_value_axis.as_ref(), secondary_scale)
+        && !axis.deleted
+    {
+        let label_h = chart_label_box_h(chart_axis_text_pt(chart, &axis.text_style));
+        let label_x = plot_x + plot_w + GAP;
+        let label_w = (secondary_value_label_gutter_pt(chart) - GAP).max(0.0);
+        for tick in secondary_scale.ticks() {
+            let frac = secondary_scale.fraction(tick);
+            let y = column_value_chrome_y(chart, plot_y, plot_h, frac, sheet_frame_top_pt);
+            let _ = writeln!(
+                out,
+                "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(left + horizon)[#text(size: {}pt{})[{}]]])",
+                format_f64(label_x),
+                format_f64(y - label_h / 2.0),
+                format_f64(label_w),
+                format_f64(label_h),
+                format_f64(chart_axis_text_pt(chart, &axis.text_style)),
+                chart_axis_text_attrs(chart, &axis.text_style),
+                escape_typst(&chart_value_label_formatted(
+                    tick,
+                    secondary_axis_number_format(chart, axis)
+                ))
+            );
         }
     }
 
@@ -4106,7 +4303,13 @@ fn generate_chart_axis(
             .take(categories)
             .enumerate()
             .map(|(cat_index, value)| {
-                let frac: f64 = scale.fraction(*value);
+                let series_scale = chart
+                    .secondary_value_axis
+                    .as_ref()
+                    .filter(|axis| axis.series_indices.contains(&s_index))
+                    .and(secondary_scale.as_ref())
+                    .unwrap_or(&scale);
+                let frac: f64 = series_scale.fraction(*value);
                 if horizontal {
                     // Bar charts run their categories bottom-up and place from
                     // the plot box's own top edge, as the column loop above does.
@@ -4184,6 +4387,31 @@ fn generate_chart_axis(
     }
     if let (true, Some(stroke)) = (bottom_axis_drawn, bottom_stroke.as_deref()) {
         write_bottom_axis_line(out, plot_x, bottom_axis_y, plot_w, stroke);
+    }
+    if !horizontal
+        && let Some(axis) = chart.secondary_value_axis.as_ref()
+        && !axis.deleted
+        && let Some(stroke) = chart_chrome_stroke(axis.line)
+    {
+        write_left_axis_line(out, plot_x + plot_w, plot_y, plot_h, &stroke);
+        if let (Some(secondary_scale), Some(reach)) = (
+            secondary_scale,
+            tick_reach(
+                axis.major_tick_mark,
+                chart_axis_text_pt(chart, &axis.text_style),
+            ),
+        ) {
+            for tick in secondary_scale.ticks() {
+                let frac = secondary_scale.fraction(tick);
+                write_tick_right_of_plot(
+                    out,
+                    plot_x + plot_w,
+                    column_value_chrome_y(chart, plot_y, plot_h, frac, sheet_frame_top_pt),
+                    reach,
+                    &stroke,
+                );
+            }
+        }
     }
     if value_axis_drawn
         && let Some(reach) = tick_reach(
@@ -4272,6 +4500,24 @@ fn generate_chart_axis(
             escape_typst(title)
         );
     }
+    if !horizontal
+        && let Some(axis) = chart.secondary_value_axis.as_ref()
+        && !axis.deleted
+        && let Some(title) = axis.title.as_deref()
+    {
+        let title_w = chart_axis_title_band_h(chart, &axis.title_text_style);
+        let _ = writeln!(
+            out,
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: {}pt{})[{}]]]])",
+            format_f64(plot_x + plot_w + secondary_value_label_gutter_pt(chart)),
+            format_f64(plot_y),
+            format_f64(title_w),
+            format_f64(plot_h),
+            format_f64(chart_axis_title_text_pt(chart, &axis.title_text_style)),
+            chart_axis_title_text_attrs(chart, &axis.title_text_style),
+            escape_typst(title)
+        );
+    }
 
     // Legend on the edge `<c:legendPos>` asks for — none when the chart
     // declares no `<c:legend>` (issue #762). Bounded rather than returned
@@ -4305,14 +4551,11 @@ fn generate_chart_axis(
                 chart_tick_band_pt(chart),
             )
         } else {
-            let category_gutter_h: f64 = if chart.host == crate::ir::ChartHost::Spreadsheet
-                && (chart.text_style.size_pt.is_some()
-                    || chart.category_axis_text_style.size_pt.is_some())
-            {
-                axis_label_gutters(chart, frame).1
-            } else {
-                chart_category_band_pt(chart)
-            };
+            // The bottom legend clears the whole axis-label gutter, including
+            // an axis-title band even when its text size is inherited. Using
+            // only the category-label band puts that title on top of the
+            // legend for ordinary Excel charts with an implicit 9pt title.
+            let category_gutter_h: f64 = axis_label_gutters(chart, frame).1;
             (chart_tick_band_pt(chart) + GAP, category_gutter_h)
         };
         let (entry_x, entry_y) = legend.entry_origin(

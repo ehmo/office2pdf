@@ -10,8 +10,9 @@ use super::drawingml::{self, SchemeColors, ThemeFontScheme};
 use super::xml_util;
 use crate::ir::{
     AxisTickMark, BarBandLayout, Chart, ChartAreaFill, ChartAreaOutline, ChartGrouping, ChartHost,
-    ChartLine, ChartPlotAreaLayout, ChartSeries, ChartTextStyle, ChartTitleLayout, ChartType,
-    Color, DataLabelPosition, DataLabels, LegendPosition, MarkerSymbol,
+    ChartLine, ChartPlotAreaLayout, ChartSecondaryValueAxis, ChartSeries, ChartTextStyle,
+    ChartTitleLayout, ChartType, Color, DataLabelPosition, DataLabels, LegendPosition,
+    MarkerSymbol,
 };
 
 /// Mapping from XML chart element tag names to their corresponding `ChartType`.
@@ -46,6 +47,11 @@ pub(crate) fn resolve_chart_text_fonts(chart: &mut Chart, theme: &ThemeFontSchem
         &mut chart.value_axis_title_text_style,
     ] {
         style.font_family = theme.resolve_chart_text_typeface(style.font_family.as_deref());
+    }
+    if let Some(axis) = chart.secondary_value_axis.as_mut() {
+        for style in [&mut axis.text_style, &mut axis.title_text_style] {
+            style.font_family = theme.resolve_chart_text_typeface(style.font_family.as_deref());
+        }
     }
     for series in &mut chart.series {
         series.data_labels.text_style.font_family =
@@ -149,6 +155,100 @@ fn bar_direction_chart_type(direction: Option<&str>) -> Option<ChartType> {
     }
 }
 
+/// Axis identifiers and series owned by one plot-area family.
+struct ChartFamilyAxes {
+    chart_type: ChartType,
+    axis_ids: Vec<u64>,
+    series_indices: Vec<usize>,
+}
+
+/// Resolve semantic axes after the whole plot area has been read.
+///
+/// Axis elements follow the chart-family elements in ordinary OOXML, and a
+/// combo chart may carry two category/value pairs. Waiting until the end lets
+/// physical position select the primary pair while the family's `axId`s bind
+/// its line series to the independent right scale.
+fn resolve_chart_axes(
+    chart_type: &ChartType,
+    category_axes: &[Axis],
+    value_axes: &[Axis],
+    families: &[ChartFamilyAxes],
+) -> (Axis, Axis, Option<ChartSecondaryValueAxis>) {
+    if matches!(chart_type, ChartType::Scatter) {
+        let category = value_axes
+            .iter()
+            .find(|axis| axis.position.as_deref() == Some("b"))
+            .cloned()
+            .unwrap_or_default();
+        let value = value_axes
+            .iter()
+            .find(|axis| axis.position.as_deref() == Some("l"))
+            .cloned()
+            .or_else(|| value_axes.last().cloned())
+            .unwrap_or_default();
+        return (category, value, None);
+    }
+
+    let category_position = if matches!(chart_type, ChartType::Bar) {
+        "l"
+    } else {
+        "b"
+    };
+    let value_position = if matches!(chart_type, ChartType::Bar) {
+        "b"
+    } else {
+        "l"
+    };
+    let category = category_axes
+        .iter()
+        .find(|axis| axis.position.as_deref() == Some(category_position))
+        .cloned()
+        .or_else(|| category_axes.last().cloned())
+        .unwrap_or_default();
+    let value = value_axes
+        .iter()
+        .find(|axis| axis.position.as_deref() == Some(value_position))
+        .cloned()
+        .or_else(|| value_axes.last().cloned())
+        .unwrap_or_default();
+
+    let secondary = if matches!(chart_type, ChartType::Column) {
+        value_axes
+            .iter()
+            .find(|axis| axis.position.as_deref() == Some("r"))
+            .and_then(|axis| {
+                let axis_id = axis.id?;
+                let category_id = axis.cross_id?;
+                let series_indices: Vec<usize> = families
+                    .iter()
+                    .filter(|family| {
+                        matches!(family.chart_type, ChartType::Line)
+                            && family.axis_ids.contains(&axis_id)
+                            && family.axis_ids.contains(&category_id)
+                    })
+                    .flat_map(|family| family.series_indices.iter().copied())
+                    .collect();
+                (!series_indices.is_empty()).then(|| ChartSecondaryValueAxis {
+                    series_indices,
+                    title: axis.title.clone(),
+                    title_text_style: axis.title_text_style.clone(),
+                    text_style: axis.text_style.clone(),
+                    number_format: axis.number_format.clone(),
+                    major_tick_mark: axis.major_tick_mark,
+                    line: axis.line,
+                    major_unit: axis.major_unit,
+                    min: axis.min,
+                    max: axis.max,
+                    deleted: axis.deleted,
+                })
+            })
+    } else {
+        None
+    };
+
+    (category, value, secondary)
+}
+
 /// Parse a chart XML file (e.g., `word/charts/chart1.xml`) into a `Chart` IR.
 pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Chart> {
     let mut reader = Reader::from_str(xml);
@@ -170,8 +270,9 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
     // string for one of those, so the element's absence and its emptiness are
     // different states and `title` alone cannot tell them apart (issue #1146).
     let mut has_automatic_title: bool = false;
-    let mut category_axis: Axis = Axis::default();
-    let mut value_axis: Axis = Axis::default();
+    let mut category_axes: Vec<Axis> = Vec::new();
+    let mut value_axes: Vec<Axis> = Vec::new();
+    let mut family_axes: Vec<ChartFamilyAxes> = Vec::new();
     // `c:chartSpace/c:spPr` is a *sibling* of `c:chart`, and the schema puts it
     // after it. This loop is flat over every Start event, so without that
     // marker a `c:spPr` belonging to `c:plotArea` would be read as the chart
@@ -230,23 +331,9 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
                     title_text_style = style;
                     title_layout = layout;
                 } else if tag == b"catAx" {
-                    category_axis = parse_axis(&mut reader, b"catAx", scheme);
+                    category_axes.push(parse_axis(&mut reader, b"catAx", scheme));
                 } else if tag == b"valAx" {
-                    let axis = parse_axis(&mut reader, b"valAx", scheme);
-                    // A scatter has two numeric value axes rather than one
-                    // category axis and one value axis. The rest of the IR
-                    // names axes by their physical role, so retain the bottom
-                    // numeric axis in the category slots and the left numeric
-                    // axis in the value slots. Without this the second
-                    // `<c:valAx>` overwrote the first and its x-axis title and
-                    // styling disappeared.
-                    if matches!(chart_type.as_ref(), Some(ChartType::Scatter))
-                        && axis.position.as_deref() == Some("b")
-                    {
-                        category_axis = axis;
-                    } else {
-                        value_axis = axis;
-                    }
+                    value_axes.push(parse_axis(&mut reader, b"valAx", scheme));
                 } else if let Some(ct) = chart_type_for_tag(tag) {
                     let mut plot: PlotAreaProps = PlotAreaProps::default();
                     let family_first_series: usize = series.len();
@@ -275,6 +362,11 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
                     for entry in &mut series[family_first_series..] {
                         entry.plot_type = Some(family.clone());
                     }
+                    family_axes.push(ChartFamilyAxes {
+                        chart_type: family.clone(),
+                        axis_ids: plot.axis_ids.clone(),
+                        series_indices: (family_first_series..series.len()).collect(),
+                    });
                     // The bar family governs the chart: the value scale and the
                     // category bands are the ones its columns are drawn to, and
                     // the other families lay over them. Without this a
@@ -343,6 +435,8 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
 
     let chart_type = chart_type?;
     let default_band_layout: BarBandLayout = BarBandLayout::default();
+    let (category_axis, value_axis, secondary_value_axis) =
+        resolve_chart_axes(&chart_type, &category_axes, &value_axes, &family_axes);
 
     // `plot_type` records the family only where it differs from the chart's,
     // so a single-family chart carries none of it and hand-built IR reads the
@@ -431,6 +525,7 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
         category_axis_text_style: category_axis.text_style,
         value_axis_text_style: value_axis.text_style,
         value_axis_number_format: value_axis.number_format,
+        secondary_value_axis,
     })
 }
 
@@ -783,8 +878,12 @@ fn parse_chart_area_properties(
 const EMU_PER_POINT: f64 = 12700.0;
 
 /// What one `<c:catAx>` or `<c:valAx>` element says about itself.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Axis {
+    /// `<c:axId>` — the identifier chart families use to select this axis.
+    id: Option<u64>,
+    /// `<c:crossAx>` — the reciprocal axis this one crosses.
+    cross_id: Option<u64>,
     /// `<c:axPos>` — the physical edge this axis occupies.
     position: Option<String>,
     title: Option<String>,
@@ -898,6 +997,17 @@ fn parse_axis(reader: &mut Reader<&[u8]>, end_tag: &[u8], scheme: &SchemeColors<
                 if e.local_name().as_ref() == b"axPos" =>
             {
                 axis.position = xml_util::get_attr_str(e, b"val");
+            }
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"axId" =>
+            {
+                axis.id = xml_util::get_attr_str(e, b"val").and_then(|value| value.parse().ok());
+            }
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"crossAx" =>
+            {
+                axis.cross_id =
+                    xml_util::get_attr_str(e, b"val").and_then(|value| value.parse().ok());
             }
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
                 if e.local_name().as_ref() == b"majorUnit" =>
@@ -1201,6 +1311,8 @@ fn parse_chart_title(
 /// Office writes them all self-closing, so they arrive as `Empty` events.
 #[derive(Debug, Default)]
 struct PlotAreaProps {
+    /// The axes this family selects, in the order stated by `<c:axId>`.
+    axis_ids: Vec<u64>,
     /// `<c:barDir>`, exclusive to the bar family.
     bar_direction: Option<String>,
     /// `<c:grouping>`.
@@ -1226,6 +1338,13 @@ impl PlotAreaProps {
             b"gapWidth" => self.gap_width = xml_util::get_attr_str(e, b"val"),
             b"overlap" => self.overlap = xml_util::get_attr_str(e, b"val"),
             b"holeSize" => self.hole_size = xml_util::get_attr_str(e, b"val"),
+            b"axId" => {
+                if let Some(id) =
+                    xml_util::get_attr_str(e, b"val").and_then(|value| value.parse().ok())
+                {
+                    self.axis_ids.push(id);
+                }
+            }
             _ => return false,
         }
         true

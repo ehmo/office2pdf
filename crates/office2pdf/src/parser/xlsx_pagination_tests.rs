@@ -139,6 +139,7 @@ fn bar_chart() -> crate::ir::Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,

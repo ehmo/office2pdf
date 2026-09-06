@@ -2987,6 +2987,20 @@ fn a_leading_line_chart_still_leaves_the_bar_family_governing() {
     assert_eq!(chart.series[1].plot_type, None);
 }
 
+#[test]
+fn a_column_line_combo_binds_its_line_to_the_right_value_axis() {
+    let xml = r#"<c:chartSpace xmlns:c="urn:c" xmlns:a="urn:a"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>12</c:v></c:pt><c:pt idx="1"><c:v>19</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:lineChart><c:ser><c:val><c:numLit><c:pt idx="0"><c:v>1500</c:v></c:pt><c:pt idx="1"><c:v>2900</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="3"/><c:axId val="4"/></c:lineChart><c:catAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:axPos val="l"/><c:crossAx val="1"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Value</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx><c:valAx><c:axId val="4"/><c:axPos val="r"/><c:crossAx val="3"/><c:majorUnit val="500"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Target</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx><c:catAx><c:axId val="3"/><c:axPos val="b"/><c:crossAx val="4"/></c:catAx></c:plotArea></c:chart></c:chartSpace>"#;
+
+    let chart = parse_chart_xml(xml, &SchemeColors::empty()).unwrap();
+    assert_eq!(chart.value_axis_title.as_deref(), Some("Value"));
+    let secondary = chart
+        .secondary_value_axis
+        .expect("the reciprocal right pair is retained");
+    assert_eq!(secondary.series_indices, vec![1]);
+    assert_eq!(secondary.title.as_deref(), Some("Target"));
+    assert_eq!(secondary.major_unit, Some(500.0));
+}
+
 /// A single-family chart names no per-series family: every series is the
 /// chart's own kind, which is what `None` says.
 #[test]
