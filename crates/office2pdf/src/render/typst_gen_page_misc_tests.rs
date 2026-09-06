@@ -878,13 +878,16 @@ fn test_table_page_with_anchored_chart_overlays_the_grid() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -907,6 +910,7 @@ fn test_table_page_with_anchored_chart_overlays_the_grid() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -935,6 +939,8 @@ fn test_table_page_with_anchored_chart_overlays_the_grid() {
                 width: 200.0,
                 height: 120.0,
                 print_scale: 1.0,
+                clip_left_pt: None,
+                clip_width_pt: None,
             }),
             chart,
         }],
@@ -949,13 +955,17 @@ fn test_table_page_with_anchored_chart_overlays_the_grid() {
     // Excel floats an anchored chart over the cells, so the grid keeps every
     // row in one table instead of being cut into segments around it (#982).
     assert_eq!(src.matches("#table(").count(), 1);
-    // The anchor's offsets are the sheet content origin's, and the drawing
-    // layer measures from the page corner, so each carries its margin.
-    let margin: f64 = crate::defaults::DEFAULT_MARGIN_PT;
+    // The printable-height clip begins at the top margin. Inside it, the
+    // chart keeps its sheet-relative vertical offset; its horizontal offset
+    // remains page-relative and therefore carries the left margin.
+    let size = PageSize::default();
+    let margins = Margins::default();
     let placement: String = format!(
-        "#place(top + left, dy: {}pt)[#place(top + left, dx: {}pt)[",
-        margin + 60.0,
-        margin + 40.0
+        "#place(top + left, dy: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dy: 60pt)[#place(top + left, dx: {}pt)[",
+        format_f64(margins.top),
+        format_f64(size.width),
+        format_f64(size.height - margins.top - margins.bottom),
+        format_f64(margins.left + 40.0),
     );
     let overlay: usize = src
         .find(&placement)
@@ -987,8 +997,8 @@ fn test_table_page_with_anchored_chart_overlays_the_grid() {
 /// Excel prints them (issue #1069).
 #[test]
 fn test_fitted_sheet_draws_the_whole_chart_shrunk() {
-    let unscaled: String = sheet_source_with_chart_print_scale(1.0);
-    let fitted: String = sheet_source_with_chart_print_scale(0.82);
+    let unscaled: String = sheet_source_with_chart_placement(40.0, 1.0, None);
+    let fitted: String = sheet_source_with_chart_placement(40.0, 0.82, None);
 
     assert!(
         !unscaled.contains("#scale("),
@@ -1020,9 +1030,32 @@ fn test_fitted_sheet_draws_the_whole_chart_shrunk() {
         .expect("the fitted sheet compiles");
 }
 
+/// A chart that crosses a horizontal page break is drawn once per page. Each
+/// copy is clipped to that page's worksheet interval, so no chart content can
+/// spill into the neighbouring page column.
+#[test]
+fn test_continued_sheet_chart_is_clipped_to_its_page_column() {
+    let source: String = sheet_source_with_chart_placement(-50.0, 1.0, Some((0.0, 400.0)));
+    let margin: f64 = crate::defaults::DEFAULT_MARGIN_PT;
+    let wrapper: String = format!(
+        "#place(top + left, dx: {margin}pt)[#box(width: 400pt, height: 120pt, clip: true)[#place(top + left, dx: -50pt)["
+    );
+
+    assert!(
+        source.contains(&wrapper),
+        "the continued chart is shifted inside a page-width clipping box: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the clipped chart compiles");
+}
+
 /// The sheet of [`test_table_page_with_anchored_chart_overlays_the_grid`],
-/// printed at `print_scale`.
-fn sheet_source_with_chart_print_scale(print_scale: f64) -> String {
+/// placed and printed with the requested page-column clipping interval.
+fn sheet_source_with_chart_placement(
+    x_offset_pt: f64,
+    print_scale: f64,
+    clip: Option<(f64, f64)>,
+) -> String {
     use crate::ir::{Chart, ChartGrouping, ChartSeries, ChartType, DataLabels, LegendPosition};
 
     let chart = Chart {
@@ -1039,13 +1072,16 @@ fn sheet_source_with_chart_print_scale(print_scale: f64) -> String {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1068,6 +1104,7 @@ fn sheet_source_with_chart_print_scale(print_scale: f64) -> String {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1085,11 +1122,13 @@ fn sheet_source_with_chart_print_scale(print_scale: f64) -> String {
         charts: vec![crate::ir::SheetChart {
             anchor_row: 3,
             placement: Some(crate::ir::SheetChartPlacement {
-                x_offset_pt: 40.0,
+                x_offset_pt,
                 y_offset_pt: 60.0,
                 width: 200.0,
                 height: 120.0,
                 print_scale,
+                clip_left_pt: clip.map(|(left, _)| left),
+                clip_width_pt: clip.map(|(_, width)| width),
             }),
             chart,
         }],
@@ -1118,13 +1157,16 @@ fn test_table_page_with_chart_at_end() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1147,6 +1189,7 @@ fn test_table_page_with_chart_at_end() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -3636,8 +3679,12 @@ fn test_centered_sheet_moves_its_drawings_with_the_grid() {
             }],
         }],
         fill: None,
+        gradient_fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
     });
     let source = generate_typst(&make_doc(vec![Page::Sheet(sheet)]))
         .unwrap()
@@ -3703,6 +3750,7 @@ fn sheet_with_a_picture_over_a_filled_panel() -> Page {
             anchor_row: 1,
             x_offset_pt: 20.0,
             y_offset_pt: 10.0,
+            clip_left_pt: None,
             clip_width_pt: None,
             image: ImageData {
                 data: PIXEL_PNG.to_vec(),

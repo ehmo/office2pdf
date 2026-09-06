@@ -15,6 +15,28 @@ pub enum ConvertError {
     #[error("render error: {0}")]
     Render(String),
 
+    /// Conversion was stopped before rendering because the input uses a
+    /// document construct whose output is not proved.
+    #[error("unsupported {format} element: {element}")]
+    UnsupportedElement {
+        /// Source document format.
+        format: &'static str,
+        /// Construct that requires refusal.
+        element: String,
+    },
+
+    /// Conversion was stopped before rendering because the parsed document
+    /// exceeded a bounded resource.
+    #[error("resource limit exceeded: {resource} is {actual}, limit is {limit}")]
+    ResourceLimit {
+        /// Resource that exceeded its limit.
+        resource: &'static str,
+        /// Maximum accepted value.
+        limit: usize,
+        /// Value found in the parsed document.
+        actual: usize,
+    },
+
     #[error("file is encrypted/password-protected and cannot be converted")]
     UnsupportedEncryption,
 }

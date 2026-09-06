@@ -57,6 +57,14 @@ fn fit_to_width(pages_wide: u32) -> SheetFit {
     }
 }
 
+fn fit_to_height(pages_tall: u32, sheet_height_pt: f64) -> SheetFit {
+    SheetFit {
+        pages_tall: Some(pages_tall),
+        sheet_height_pt,
+        ..SheetFit::default()
+    }
+}
+
 fn make_page(column_widths: Vec<f64>, rows: Vec<TableRow>) -> SheetPage {
     SheetPage {
         name: "Sheet1".to_string(),
@@ -106,7 +114,9 @@ fn bar_chart() -> crate::ir::Chart {
         legend_position: crate::ir::LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -129,6 +139,7 @@ fn bar_chart() -> crate::ir::Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -174,13 +185,14 @@ fn test_wide_sheet_splits_into_column_groups() {
 }
 
 #[test]
-fn test_merge_straddling_boundary_truncates_and_blanks_continuation() {
-    // Columns 0-1 on page 1, columns 2-3 on page 2. The merged cell spans
-    // columns 1-2, so page 1 shows its content truncated to one column and
-    // page 2 shows a blank continuation cell.
+fn test_left_aligned_merge_straddling_boundary_continues_without_duplication() {
+    // Columns 0-1 fit page 1 and columns 2-3 fit page 2. The merge's one-line
+    // text crosses that boundary and must continue from the same text offset.
+    let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let merged = TableCell {
         col_span: 2,
-        ..cell("MERGED")
+        spill_width: Some(300.0),
+        ..cell(text)
     };
     let page = make_page(
         vec![150.0, 150.0, 150.0, 150.0],
@@ -190,18 +202,304 @@ fn test_merge_straddling_boundary_truncates_and_blanks_continuation() {
             height: None,
         }],
     );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("a one-line left-aligned merge can continue across the boundary");
     let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
     assert_eq!(pages.len(), 2);
+    let first = cell_text(&pages[0].table.rows[0].cells[1]);
+    let second = cell_text(&pages[1].table.rows[0].cells[0]);
+    assert!(!first.is_empty());
+    assert!(!second.is_empty());
+    assert_eq!(format!("{first}{second}"), text);
+}
 
-    let first_row = &pages[0].table.rows[0];
-    assert_eq!(first_row.cells.len(), 2);
-    assert_eq!(cell_text(&first_row.cells[1]), "MERGED");
-    assert_eq!(first_row.cells[1].col_span, 1u32);
+#[test]
+fn test_left_aligned_merge_continuation_preserves_rich_text_styles() {
+    let mut merged = cell("");
+    merged.col_span = 2;
+    merged.spill_width = Some(300.0);
+    let Block::Paragraph(paragraph) = &mut merged.content[0] else {
+        unreachable!()
+    };
+    paragraph.runs = vec![
+        Run {
+            text: "A".repeat(25),
+            style: TextStyle {
+                bold: Some(true),
+                ..TextStyle::default()
+            },
+            href: None,
+            footnote: None,
+        },
+        Run {
+            text: "B".repeat(10),
+            style: TextStyle {
+                italic: Some(true),
+                ..TextStyle::default()
+            },
+            href: None,
+            footnote: None,
+        },
+    ];
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), merged, cell("D")],
+            height: None,
+        }],
+    );
 
-    let second_row = &pages[1].table.rows[0];
-    assert_eq!(second_row.cells.len(), 2);
-    assert_eq!(cell_text(&second_row.cells[0]), "");
-    assert_eq!(cell_text(&second_row.cells[1]), "D");
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("one-line rich text can continue across the boundary");
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+    let first = &pages[0].table.rows[0].cells[1];
+    let second = &pages[1].table.rows[0].cells[0];
+    assert_eq!(
+        format!("{}{}", cell_text(first), cell_text(second)),
+        format!("{}{}", "A".repeat(25), "B".repeat(10))
+    );
+    let Block::Paragraph(first_paragraph) = &first.content[0] else {
+        unreachable!()
+    };
+    assert!(
+        first_paragraph
+            .runs
+            .iter()
+            .all(|run| run.style.bold == Some(true))
+    );
+    let Block::Paragraph(second_paragraph) = &second.content[0] else {
+        unreachable!()
+    };
+    assert!(
+        second_paragraph
+            .runs
+            .iter()
+            .any(|run| run.style.bold == Some(true))
+    );
+    assert!(
+        second_paragraph
+            .runs
+            .iter()
+            .any(|run| run.style.italic == Some(true))
+    );
+}
+
+#[test]
+fn test_wrapped_left_aligned_merge_straddling_boundary_refuses() {
+    let mut merged = cell("wrapped\ntext");
+    merged.col_span = 2;
+    merged.spill_width = Some(300.0);
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), merged, cell("D")],
+            height: None,
+        }],
+    );
+
+    let error =
+        ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+            .expect_err("wrapped continuation geometry is not proved");
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "merged cell across a horizontal page break"
+    ));
+}
+
+#[test]
+fn test_empty_merge_straddling_boundary_keeps_geometry_without_content() {
+    let mut merged = cell("");
+    merged.col_span = 2;
+    merged.content.clear();
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), merged, cell("D")],
+            height: None,
+        }],
+    );
+
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("an empty merge has no visible text flow to lose");
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].table.rows[0].cells[1].col_span, 1);
+    assert_eq!(pages[1].table.rows[0].cells[0].col_span, 1);
+    assert!(pages[0].table.rows[0].cells[1].content.is_empty());
+    assert!(pages[1].table.rows[0].cells[0].content.is_empty());
+}
+
+#[test]
+fn test_centered_merge_straddling_boundary_refuses_before_slicing() {
+    let mut centered = cell("CENTERED");
+    centered.col_span = 2;
+    centered.spill_width = Some(300.0);
+    let Block::Paragraph(paragraph) = &mut centered.content[0] else {
+        unreachable!()
+    };
+    paragraph.style.alignment = Some(crate::ir::Alignment::Center);
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), centered, cell("D")],
+            height: None,
+        }],
+    );
+    let error =
+        ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+            .expect_err("centred continuation geometry is not proved");
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "merged cell across a horizontal page break"
+    ));
+}
+
+#[test]
+fn test_centered_merge_whose_ink_fits_first_window_keeps_its_original_seat() {
+    let mut centered = cell("1");
+    centered.col_span = 5;
+    centered.spill_width = Some(250.0);
+    let Block::Paragraph(paragraph) = &mut centered.content[0] else {
+        unreachable!()
+    };
+    paragraph.style.alignment = Some(crate::ir::Alignment::Center);
+    let page = make_page(
+        vec![50.0; 12],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![
+                cell("A"),
+                cell("B"),
+                cell("C"),
+                cell("D"),
+                centered,
+                cell("J"),
+                cell("K"),
+                cell("L"),
+            ],
+            height: None,
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("the centered glyph remains wholly inside page 1");
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+    assert_eq!(pages.len(), 2);
+    let first_fragment = &pages[0].table.rows[0].cells[4];
+    assert_eq!(cell_text(first_fragment), "1");
+    assert_eq!(first_fragment.padding.expect("adjusted inset").left, 55.0);
+    assert!(cell_text(&pages[1].table.rows[0].cells[0]).is_empty());
+}
+
+#[test]
+fn test_merge_inside_one_column_group_remains_supported() {
+    let merged = TableCell {
+        col_span: 2,
+        ..cell("MERGED")
+    };
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![merged, cell("C"), cell("D")],
+            height: None,
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("a merge contained within page 1 remains supported");
+}
+
+#[test]
+fn test_fit_to_width_keeps_full_width_merge_supported() {
+    let merged = TableCell {
+        col_span: 4,
+        ..cell("MERGED")
+    };
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![merged],
+            height: Some(20.0),
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, fit_to_width(1), true)
+        .expect("fit-to-width removes the horizontal page break");
+}
+
+#[test]
+fn test_repeated_title_width_is_part_of_merge_boundary_detection() {
+    // Page 1 carries columns 0-3. Repeating column 0 leaves room for only
+    // columns 4-6 on page 2, so the merge over columns 6-7 crosses onto page 3.
+    let merge = TableCell {
+        col_span: 2,
+        ..cell("MERGED")
+    };
+    let page = make_page(
+        vec![100.0; 8],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![
+                cell("A"),
+                cell("B"),
+                cell("C"),
+                cell("D"),
+                cell("E"),
+                cell("F"),
+                merge,
+            ],
+            height: None,
+        }],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("without repeated titles the merge stays inside page 2");
+    let error = ensure_supported_horizontal_merged_cell_flow(
+        &page,
+        Some((0, 1)),
+        SheetFit::default(),
+        true,
+    )
+    .expect_err("the repeated title must move the later boundary into the merge");
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "merged cell across a horizontal page break"
+    ));
+}
+
+#[test]
+fn test_prior_rowspan_preserves_later_cell_column_positions() {
+    let upper = TableCell {
+        col_span: 2,
+        row_span: 2,
+        ..cell("UPPER")
+    };
+    let lower = TableCell {
+        col_span: 2,
+        ..cell("LOWER")
+    };
+    let page = make_page(
+        vec![150.0, 150.0, 150.0, 150.0],
+        vec![
+            TableRow {
+                minimum_height: None,
+                cells: vec![upper, cell("C"), cell("D")],
+                height: None,
+            },
+            TableRow {
+                minimum_height: None,
+                cells: vec![lower],
+                height: None,
+            },
+        ],
+    );
+    ensure_supported_horizontal_merged_cell_flow(&page, None, SheetFit::default(), true)
+        .expect("the lower merge occupies columns 2-3 wholly inside page 2");
 }
 
 #[test]
@@ -229,8 +527,8 @@ fn test_merge_spill_width_is_clamped_to_the_column_group() {
 
     // Page 1 keeps two of the four merged columns, so the line may run 300pt.
     assert_eq!(pages[0].table.rows[0].cells[0].spill_width, Some(300.0));
-    // The continuation carries no content, so it claims no spill either.
-    assert_eq!(pages[1].table.rows[0].cells[0].spill_width, None);
+    // This short label fits page 1, leaving an empty continuation.
+    assert!(cell_text(&pages[1].table.rows[0].cells[0]).is_empty());
 }
 
 #[test]
@@ -257,7 +555,7 @@ fn test_unmerged_spill_width_is_clamped_to_the_remaining_group_width() {
 }
 
 #[test]
-fn test_charts_stay_on_first_column_group() {
+fn chart_crossing_a_column_group_continues_on_the_next_page() {
     let mut page = make_page(
         vec![300.0, 300.0],
         vec![TableRow {
@@ -269,24 +567,304 @@ fn test_charts_stay_on_first_column_group() {
     page.charts = vec![crate::ir::SheetChart {
         anchor_row: 1,
         placement: Some(crate::ir::SheetChartPlacement {
-            x_offset_pt: 0.0,
+            x_offset_pt: 250.0,
             y_offset_pt: 0.0,
             width: 200.0,
             height: 100.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: bar_chart(),
     }];
     let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
     assert_eq!(pages.len(), 2);
     assert_eq!(pages[0].charts.len(), 1);
-    assert!(pages[1].charts.is_empty());
+    let first = pages[0].charts[0].placement.unwrap();
+    assert_eq!(first.x_offset_pt, 250.0);
+    assert_eq!(first.clip_width_pt, Some(300.0));
+    assert_eq!(pages[1].charts.len(), 1);
+    let second = pages[1].charts[0].placement.unwrap();
+    assert_eq!(second.x_offset_pt, -50.0);
+    assert_eq!(second.clip_width_pt, Some(400.0));
 }
 
 #[test]
-fn test_pathologically_wide_sheet_is_capped() {
-    // 100 columns x 150pt with 400pt printable would be 50 pages; the cap
-    // keeps the tail on the last page instead of exploding the compiler.
+fn chart_extent_adds_page_columns_when_the_cell_grid_fits() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A")],
+            height: None,
+        }],
+    );
+    page.charts = vec![crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 0.0,
+            y_offset_pt: 0.0,
+            width: 1_050.0,
+            height: 100.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0].table.column_widths, vec![100.0]);
+    assert!(pages[1].table.column_widths.is_empty());
+    assert!(pages[2].table.column_widths.is_empty());
+    assert_eq!(pages[0].charts[0].placement.unwrap().x_offset_pt, 0.0);
+    assert_eq!(pages[1].charts[0].placement.unwrap().x_offset_pt, -400.0);
+    assert_eq!(pages[2].charts[0].placement.unwrap().x_offset_pt, -800.0);
+    assert!(
+        pages
+            .iter()
+            .all(|page| { page.charts[0].placement.unwrap().clip_width_pt == Some(400.0) })
+    );
+}
+
+#[test]
+fn text_box_extent_adds_page_columns_when_the_cell_grid_fits() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A")],
+            height: None,
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 0.0,
+        y_offset_pt: 0.0,
+        width: 1_050.0,
+        height: 100.0,
+        paragraphs: vec![Paragraph {
+            style: ParagraphStyle::default(),
+            runs: vec![Run {
+                text: "all text survives".to_string(),
+                style: TextStyle::default(),
+                href: None,
+                footnote: None,
+            }],
+        }],
+        fill: None,
+        gradient_fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0].text_boxes[0].x_offset_pt, 0.0);
+    assert_eq!(pages[1].text_boxes[0].x_offset_pt, -400.0);
+    assert_eq!(pages[2].text_boxes[0].x_offset_pt, -800.0);
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.text_boxes[0].clip_width_pt == Some(400.0))
+    );
+}
+
+#[test]
+fn drawing_extent_adds_pages_after_a_wide_cell_grid() {
+    let mut page = make_page(
+        vec![300.0, 300.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("LEFT"), cell("RIGHT")],
+            height: None,
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 600.0,
+        y_offset_pt: 0.0,
+        width: 900.0,
+        height: 100.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        gradient_fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert!(pages[0].text_boxes.is_empty());
+    assert_eq!(pages[1].text_boxes[0].x_offset_pt, 300.0);
+    assert_eq!(pages[2].text_boxes[0].x_offset_pt, -100.0);
+    assert_eq!(pages[3].text_boxes[0].x_offset_pt, -500.0);
+    assert!(
+        pages[1..]
+            .iter()
+            .all(|page| page.text_boxes[0].clip_width_pt == Some(400.0))
+    );
+}
+
+#[test]
+fn image_crossing_a_column_group_continues_on_the_next_page() {
+    let mut page = make_page(
+        vec![300.0, 300.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), cell("B")],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(250.0, 200.0));
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].images.len(), 1);
+    assert_eq!(pages[0].images[0].x_offset_pt, 250.0);
+    assert_eq!(pages[0].images[0].clip_width_pt, Some(300.0));
+    assert_eq!(pages[1].images.len(), 1);
+    assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
+}
+
+#[test]
+fn image_anchored_in_a_later_column_group_moves_to_that_page() {
+    let mut page = make_page(
+        vec![300.0, 300.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A"), cell("B")],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(350.0, 50.0));
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert!(pages[0].images.is_empty());
+    assert_eq!(pages[1].images.len(), 1);
+    assert_eq!(pages[1].images[0].x_offset_pt, 50.0);
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
+}
+
+#[test]
+fn image_extent_adds_page_columns_when_the_cell_grid_fits() {
+    // The populated grid occupies only 100pt, but printable page boundaries
+    // still divide a drawing that reaches 1,050pt across the sheet. Returning
+    // early because the cells fit loses both continuation strips.
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("A")],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(350.0, 700.0));
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 3);
+    assert_eq!(pages[0].table.column_widths, vec![100.0]);
+    assert!(pages[1].table.column_widths.is_empty());
+    assert!(pages[2].table.column_widths.is_empty());
+    assert_eq!(pages[0].images[0].x_offset_pt, 350.0);
+    assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[2].images[0].x_offset_pt, -450.0);
+    assert!(
+        pages
+            .iter()
+            .all(|page| page.images[0].clip_width_pt == Some(400.0))
+    );
+}
+
+#[test]
+fn continued_drawings_are_clipped_after_repeated_title_columns() {
+    let mut page = make_page(
+        vec![100.0; 6],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![
+                cell("A"),
+                cell("B"),
+                cell("C"),
+                cell("D"),
+                cell("E"),
+                cell("F"),
+            ],
+            height: None,
+        }],
+    );
+    page.images.push(sheet_image(350.0, 100.0));
+    page.charts.push(crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 350.0,
+            y_offset_pt: 0.0,
+            width: 100.0,
+            height: 100.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    });
+    page.text_boxes.push(crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 350.0,
+        y_offset_pt: 0.0,
+        width: 100.0,
+        height: 100.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        gradient_fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    });
+
+    let pages = split_sheet_page_by_width(page, Some((0, 1)), SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].images[0].clip_left_pt, Some(0.0));
+    assert_eq!(pages[0].images[0].clip_width_pt, Some(400.0));
+    assert_eq!(pages[1].images[0].x_offset_pt, 50.0);
+    assert_eq!(pages[1].images[0].clip_left_pt, Some(100.0));
+    assert_eq!(pages[1].images[0].clip_width_pt, Some(300.0));
+    let first_chart = pages[0].charts[0].placement.unwrap();
+    assert_eq!(first_chart.clip_left_pt, Some(0.0));
+    assert_eq!(first_chart.clip_width_pt, Some(400.0));
+    let second_chart = pages[1].charts[0].placement.unwrap();
+    assert_eq!(second_chart.x_offset_pt, 50.0);
+    assert_eq!(second_chart.clip_left_pt, Some(100.0));
+    assert_eq!(second_chart.clip_width_pt, Some(300.0));
+    assert_eq!(pages[0].text_boxes[0].clip_left_pt, Some(0.0));
+    assert_eq!(pages[0].text_boxes[0].clip_width_pt, Some(400.0));
+    assert_eq!(pages[1].text_boxes[0].x_offset_pt, 50.0);
+    assert_eq!(pages[1].text_boxes[0].clip_left_pt, Some(100.0));
+    assert_eq!(pages[1].text_boxes[0].clip_width_pt, Some(300.0));
+}
+
+#[test]
+fn test_wide_sheet_preserves_every_printable_column_group() {
+    // 100 columns x 150pt with 400pt printable is 50 page-columns. Folding the
+    // tail into an oversized final page keeps the cells in the IR but clips
+    // them from the PDF, which is silent content loss.
     let cells: Vec<TableCell> = (0..100).map(|i| cell(&format!("c{i}"))).collect();
     let page = make_page(
         vec![150.0; 100],
@@ -297,9 +875,56 @@ fn test_pathologically_wide_sheet_is_capped() {
         }],
     );
     let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
-    assert_eq!(pages.len(), 12);
+    assert_eq!(pages.len(), 50);
+    assert!(
+        pages
+            .iter()
+            .all(|page| { page.table.column_widths.iter().sum::<f64>() <= 400.0 })
+    );
     let total_columns: usize = pages.iter().map(|p| p.table.column_widths.len()).sum();
     assert_eq!(total_columns, 100);
+    let visible_cells: Vec<String> = pages
+        .iter()
+        .flat_map(|page| page.table.rows[0].cells.iter().map(cell_text))
+        .collect();
+    let expected_cells: Vec<String> = (0..100).map(|index| format!("c{index}")).collect();
+    assert_eq!(visible_cells, expected_cells);
+}
+
+#[test]
+fn oversized_column_does_not_widen_later_page_groups() {
+    // A single column wider than the paper must stay intact, but it must not
+    // become the packing width for ordinary columns that follow it. Otherwise
+    // those later columns are emitted past the physical page edge and their
+    // text disappears from selection.
+    let widths = [vec![1534.0], vec![100.0; 10]].concat();
+    let cells: Vec<TableCell> = (0..widths.len())
+        .map(|index| cell(&format!("c{index}")))
+        .collect();
+    let page = make_page(
+        widths,
+        vec![TableRow {
+            minimum_height: None,
+            cells,
+            height: None,
+        }],
+    );
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert_eq!(pages[0].table.column_widths, vec![1534.0]);
+    assert!(
+        pages[1..]
+            .iter()
+            .all(|page| page.table.column_widths.iter().sum::<f64>() <= 400.0)
+    );
+    let visible_cells: Vec<String> = pages
+        .iter()
+        .flat_map(|page| page.table.rows[0].cells.iter().map(cell_text))
+        .collect();
+    let expected_cells: Vec<String> = (0..11).map(|index| format!("c{index}")).collect();
+    assert_eq!(visible_cells, expected_cells);
 }
 
 /// Excel's `fitToWidth` squeezes the sheet onto that many pages instead of
@@ -322,12 +947,12 @@ fn test_fit_to_width_scales_columns_onto_one_page() {
 }
 
 /// A chart is anchored to the sheet's columns and rows, so the fit-to-page
-/// scale that shrinks those has to carry it along; leaving it full size slid
-/// the fitted grid out from under it (issue #982).
+/// scale includes its right edge and carries it with the grid. Leaving the
+/// chart out of the fitted extent sends its right edge onto another page.
 #[test]
 fn test_fit_to_width_scales_an_anchored_chart_with_the_grid() {
     let mut page = make_page(
-        vec![400.0, 400.0],
+        vec![300.0, 300.0],
         vec![TableRow {
             minimum_height: None,
             cells: vec![cell("left"), cell("right")],
@@ -342,6 +967,8 @@ fn test_fit_to_width_scales_an_anchored_chart_with_the_grid() {
             width: 600.0,
             height: 200.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: bar_chart(),
     }];
@@ -351,12 +978,12 @@ fn test_fit_to_width_scales_an_anchored_chart_with_the_grid() {
     let placement = pages[0].charts[0]
         .placement
         .expect("the chart keeps its placement");
-    assert_eq!(placement.x_offset_pt, 50.0);
-    assert_eq!(placement.y_offset_pt, 20.0);
+    assert!((placement.x_offset_pt - 57.0).abs() < 1e-9);
+    assert!((placement.y_offset_pt - 22.8).abs() < 1e-9);
     // The chart lays itself out in its full-size frame and is drawn shrunk,
     // so the box it occupies on the page is the frame times the scale.
-    assert_eq!(placement.width * placement.print_scale, 300.0);
-    assert_eq!(placement.height * placement.print_scale, 100.0);
+    assert!((placement.width * placement.print_scale - 342.0).abs() < 1e-9);
+    assert!((placement.height * placement.print_scale - 114.0).abs() < 1e-9);
 }
 
 /// Excel scales a printed sheet whole, drawings included, so the chart's own
@@ -383,6 +1010,8 @@ fn test_fit_to_width_records_the_print_scale_on_an_anchored_chart() {
             width: 600.0,
             height: 200.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: bar_chart(),
     }];
@@ -428,6 +1057,46 @@ fn test_fit_to_width_scales_an_anchored_picture_with_the_grid() {
     assert_eq!(picture.y_offset_pt, 20.0);
     assert_eq!(picture.image.width, Some(300.0));
     assert_eq!(picture.image.height, Some(100.0));
+}
+
+/// A text box is anchored to the sheet grid and carries its own text, so a
+/// fit-to-page scale must move it with the grid and shrink the complete shape.
+/// Leaving it at full size adds page columns that Excel does not print.
+#[test]
+fn test_fit_to_width_scales_an_anchored_text_box_with_the_grid() {
+    let mut page = make_page(
+        vec![400.0, 400.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("left"), cell("right")],
+            height: Some(20.0),
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 600.0,
+        y_offset_pt: 40.0,
+        width: 900.0,
+        height: 200.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        gradient_fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_width(1), true);
+
+    assert_eq!(pages.len(), 1);
+    let text_box = &pages[0].text_boxes[0];
+    assert_eq!(text_box.print_scale, 0.26);
+    assert_eq!(text_box.x_offset_pt, 156.0);
+    assert_eq!(text_box.y_offset_pt, 10.4);
+    assert_eq!(text_box.width * text_box.print_scale, 234.0);
+    assert_eq!(text_box.height * text_box.print_scale, 52.0);
 }
 
 /// Excel's auto-fit scale is a whole percent, truncated so the content is
@@ -511,6 +1180,98 @@ fn test_fit_to_height_scales_rows_onto_one_page() {
     assert_eq!(pages.len(), 1);
     assert_eq!(pages[0].table.rows[0].height, Some(10.0));
     assert_eq!(pages[0].table.column_widths, vec![50.0, 50.0]);
+}
+
+#[test]
+fn test_fit_to_height_includes_an_anchored_picture_extent() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images = vec![picture];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_height(1, 20.0), true);
+
+    assert_eq!(pages[0].images[0].y_offset_pt, 200.0);
+    assert_eq!(pages[0].images[0].image.height, Some(500.0));
+    assert_eq!(pages[0].table.rows[0].height, Some(10.0));
+}
+
+#[test]
+fn test_fit_to_height_includes_an_anchored_chart_extent() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.charts = vec![crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 0.0,
+            y_offset_pt: 400.0,
+            width: 100.0,
+            height: 1000.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_height(1, 20.0), true);
+
+    let placement = pages[0].charts[0]
+        .placement
+        .expect("the chart keeps its placement");
+    assert_eq!(placement.print_scale, 0.5);
+    assert_eq!(placement.y_offset_pt, 200.0);
+    assert_eq!(placement.height * placement.print_scale, 500.0);
+}
+
+#[test]
+fn test_fit_to_height_includes_an_anchored_text_box_extent() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.text_boxes = vec![crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 0.0,
+        y_offset_pt: 400.0,
+        width: 100.0,
+        height: 1000.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        gradient_fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    }];
+
+    let pages = split_sheet_page_by_width(page, None, fit_to_height(1, 20.0), true);
+
+    assert_eq!(pages[0].text_boxes[0].print_scale, 0.5);
+    assert_eq!(pages[0].text_boxes[0].y_offset_pt, 200.0);
+    assert_eq!(
+        pages[0].text_boxes[0].height * pages[0].text_boxes[0].print_scale,
+        500.0
+    );
 }
 
 /// Excel scales a fitted sheet by the tighter of its two bounds, not by
@@ -868,6 +1629,7 @@ fn sheet_image(x: f64, width: f64) -> crate::ir::SheetImage {
             flip_h: false,
             flip_v: false,
         },
+        clip_left_pt: None,
         clip_width_pt: None,
     }
 }
@@ -882,19 +1644,371 @@ fn a_drawing_past_the_printable_edge_adds_a_page_column() {
     page.images.push(sheet_image(10.0, 100.0));
     page.images.push(sheet_image(350.0, 100.0));
 
-    let pages = split_drawing_only_page(page);
+    let pages = split_drawing_only_page(page, SheetFit::default());
     assert_eq!(pages.len(), 2);
 
     assert_eq!(pages[0].images.len(), 2);
     assert_eq!(pages[0].images[0].x_offset_pt, 10.0);
     assert_eq!(pages[0].images[1].x_offset_pt, 350.0);
+    assert_eq!(pages[0].images[1].clip_left_pt, Some(0.0));
     assert_eq!(pages[0].images[1].clip_width_pt, Some(400.0));
 
     // The crossing image continues on the second page-column, shifted left
     // by one printable width and clipped to the same window.
     assert_eq!(pages[1].images.len(), 1);
     assert_eq!(pages[1].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[1].images[0].clip_left_pt, Some(0.0));
     assert_eq!(pages[1].images[0].clip_width_pt, Some(400.0));
+}
+
+/// A drawing-only worksheet still obeys `fitToWidth`. Its drawing extent is
+/// the printable width that the scale is measured against.
+#[test]
+fn fit_to_width_scales_a_drawing_only_sheet_onto_one_page() {
+    let mut page = make_page(Vec::new(), Vec::new());
+    page.images.push(sheet_image(350.0, 100.0));
+
+    let pages = split_drawing_only_page(page, fit_to_width(1));
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].images[0].x_offset_pt, 308.0);
+    assert_eq!(pages[0].images[0].image.width, Some(88.0));
+}
+
+#[test]
+fn fit_to_height_scales_a_drawing_only_sheet_onto_one_page() {
+    let mut page = make_page(Vec::new(), Vec::new());
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_drawing_only_page(page, fit_to_height(1, 0.0));
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].images[0].y_offset_pt, 200.0);
+    assert_eq!(pages[0].images[0].image.height, Some(500.0));
+}
+
+#[test]
+fn a_picture_continues_through_vertical_page_windows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].images[0].y_offset_pt, 400.0);
+    assert_eq!(pages[1].images[0].y_offset_pt, -300.0);
+    assert!(pages[1].table.rows.is_empty());
+}
+
+#[test]
+fn a_chart_continues_through_vertical_page_windows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.charts.push(crate::ir::SheetChart {
+        anchor_row: 1,
+        placement: Some(crate::ir::SheetChartPlacement {
+            x_offset_pt: 0.0,
+            y_offset_pt: 400.0,
+            width: 100.0,
+            height: 1000.0,
+            print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
+        }),
+        chart: bar_chart(),
+    });
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(
+        pages[1].charts[0]
+            .placement
+            .expect("the continued chart keeps its placement")
+            .y_offset_pt,
+        -300.0
+    );
+}
+
+#[test]
+fn a_text_box_continues_through_vertical_page_windows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    page.text_boxes.push(crate::ir::SheetTextBox {
+        anchor_row: 1,
+        x_offset_pt: 0.0,
+        y_offset_pt: 400.0,
+        width: 100.0,
+        height: 1000.0,
+        paragraphs: Vec::new(),
+        fill: None,
+        gradient_fill: None,
+        border: None,
+        vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
+    });
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[1].text_boxes[0].y_offset_pt, -300.0);
+}
+
+#[test]
+fn vertical_windows_run_down_before_the_next_page_column() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("only")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(350.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 4);
+    assert_eq!(pages[0].images[0].x_offset_pt, 350.0);
+    assert_eq!(pages[0].images[0].y_offset_pt, 400.0);
+    assert_eq!(pages[1].images[0].x_offset_pt, 350.0);
+    assert_eq!(pages[1].images[0].y_offset_pt, -300.0);
+    assert_eq!(pages[2].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[2].images[0].y_offset_pt, 400.0);
+    assert_eq!(pages[3].images[0].x_offset_pt, -50.0);
+    assert_eq!(pages[3].images[0].y_offset_pt, -300.0);
+}
+
+#[test]
+fn a_drawing_only_picture_continues_through_vertical_page_windows() {
+    let mut page = make_page(Vec::new(), Vec::new());
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_drawing_only_page(page, SheetFit::default());
+
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[1].images[0].y_offset_pt, -300.0);
+}
+
+#[test]
+fn the_low_level_splitter_keeps_a_multi_page_grid_on_its_flow_path() {
+    let rows = (0..40)
+        .map(|_| TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        })
+        .collect();
+    let mut page = make_page(vec![100.0], rows);
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let pages = split_sheet_page_by_width(page, None, SheetFit::default(), true);
+
+    assert_eq!(pages.len(), 1);
+    assert_eq!(pages[0].table.rows.len(), 40);
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_over_a_multi_page_grid() {
+    let rows = (0..40)
+        .map(|_| TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        })
+        .collect();
+    let mut page = make_page(vec![100.0], rows);
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow over a multi-page cell grid"
+    ));
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_when_streaming_has_later_rows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("first chunk")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, true)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow over a multi-page cell grid"
+    ));
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_with_auto_height_rows() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("auto")],
+            height: None,
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow with auto-height rows"
+    ));
+}
+
+#[test]
+fn preflight_refuses_vertical_drawings_with_manual_row_breaks() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, true, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow with manual row breaks"
+    ));
+}
+
+#[test]
+fn preflight_refuses_a_drawing_that_crosses_an_early_manual_row_break() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(200.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 150.0;
+    picture.image.height = Some(100.0);
+    page.images.push(picture);
+
+    let error =
+        ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, true, false)
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::ConvertError::UnsupportedElement { format: "XLSX", ref element }
+            if element == "vertical drawing overflow with manual row breaks"
+    ));
+}
+
+#[test]
+fn preflight_accepts_the_proved_vertical_drawing_class() {
+    let mut page = make_page(
+        vec![100.0],
+        vec![TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        }],
+    );
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    ensure_supported_vertical_drawing_flow(&page, SheetFit::default(), true, false, false).unwrap();
+}
+
+#[test]
+fn preflight_accepts_fit_to_height_after_drawing_scaling() {
+    let rows = (0..40)
+        .map(|_| TableRow {
+            minimum_height: None,
+            cells: vec![cell("row")],
+            height: Some(20.0),
+        })
+        .collect();
+    let mut page = make_page(vec![100.0], rows);
+    let mut picture = sheet_image(0.0, 100.0);
+    picture.y_offset_pt = 400.0;
+    picture.image.height = Some(1000.0);
+    page.images.push(picture);
+
+    ensure_supported_vertical_drawing_flow(&page, fit_to_height(1, 800.0), true, false, false)
+        .unwrap();
 }
 
 #[test]
@@ -902,7 +2016,7 @@ fn drawings_inside_the_printable_width_keep_one_page() {
     let mut page = make_page(Vec::new(), Vec::new());
     page.images.push(sheet_image(10.0, 100.0));
 
-    let pages = split_drawing_only_page(page);
+    let pages = split_drawing_only_page(page, SheetFit::default());
     assert_eq!(pages.len(), 1);
     assert_eq!(
         pages[0].images[0].clip_width_pt, None,

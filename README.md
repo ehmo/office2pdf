@@ -13,7 +13,7 @@ No LibreOffice, no Chromium, no Docker — just a single binary powered by [Typs
 
 - **DOCX** — paragraphs, inline formatting (bold/italic/underline/color), tables, images, drawing shapes, ordered/nested lists, syntax-highlighted code, headers/footers, page setup
 - **PPTX** — slides, text boxes, shapes, tables (with theme-based table styles), images, slide masters, speaker notes, gradient backgrounds, shadow/reflection effects
-- **XLSX** — sheets (hidden ones skipped, as Excel does), chartsheets (one page-sized chart each), cell formatting, merged cells, column widths, row heights, Excel tables (built-in style banding, header/foot rules, bold header), conditional formatting (DataBar, IconSet, and formula rules)
+- **XLSX** — sheets (hidden ones skipped, as Excel does), chartsheets (one page-sized chart each), cell formatting, merged cells subject to the horizontal page-break limits below, column widths, row heights, Excel tables (built-in style banding, header/foot rules, bold header), conditional formatting (DataBar, IconSet, and formula rules)
 - **PDF/A-2b** — archival-compliant output via `--pdf-a`
 - **Embedded font extraction** — fonts embedded in PPTX/DOCX are automatically extracted, deobfuscated, and used during conversion
 - **macOS Office font auto-discovery** — PowerPoint/Word/Excel bundled fonts are searched automatically; mutable per-user Office cloud caches require an explicit font path
@@ -107,6 +107,7 @@ office2pdf *.docx --outdir pdfs/
 # With options
 office2pdf slides.pptx --paper a4 --landscape
 office2pdf spreadsheet.xlsx --sheets "Sheet1,Summary"
+office2pdf large-spreadsheet.xlsx --streaming --streaming-chunk-size 500
 office2pdf document.docx --pdf-a
 office2pdf report.docx --font-path /usr/share/fonts/custom
 ```
@@ -191,6 +192,35 @@ is used. An explicit `setLastResortFontFamily` call takes precedence.
 Native Rust callers can use the same per-conversion path through
 `ConvertOptions::font_bytes` and `ConvertOptions::last_resort_font_family`.
 
+## Resource Limits
+
+Standard conversion stops before rendering and returns `ConvertError::ResourceLimit`
+when parsing produces more than 1,600 pages. WASM bindings throw the same message
+as a JavaScript error string. Native XLSX callers can use page-aligned row streaming
+through the CLI or `ConvertOptions` when the library enables `pdf-ops`. That path
+is not subject to the standard-renderer guard; callers must still bound their inputs.
+
+XLSX package preflight accepts at most 256 MiB of compressed input, 10,000 ZIP
+entries, and 256 MiB of total uncompressed data. Each XML or relationships part is
+limited to 16 MiB; every other part is limited to 128 MiB. Both batch and streaming
+conversion return `ConvertError::UnsupportedElement` before parsing when any of
+these limits is exceeded. WASM bindings throw the same message as a JavaScript
+error string.
+
+Rust batch and streaming XLSX conversions return `ConvertError::UnsupportedElement`
+before rendering when a drawing crosses a vertical page boundary controlled by
+auto-height rows, a multi-page cell grid (including repeated print-title rows), or
+manual row breaks. WASM bindings throw the same message as a JavaScript error string.
+Natural vertical drawing continuation is supported for fixed-height grids that fit one
+printable page and for drawing-only sheets. `fitToHeight` scaling is checked before
+this refusal.
+
+The same fail-closed rule applies to a visible merged cell that crosses a horizontal
+page break unless it is empty, is one-line left-aligned text that can be partitioned
+across page windows, or is centered text whose ink fits in the first window. Wrapped
+or right-aligned text, title-column overlap, icons, and data bars across that boundary
+return `ConvertError::UnsupportedElement` in both batch and streaming conversion.
+
 ## CLI Options
 
 | Flag | Description |
@@ -203,6 +233,8 @@ Native Rust callers can use the same per-conversion path through
 | `--sheets <NAMES>` | XLSX sheet filter (comma-separated); the only way to print a hidden sheet |
 | `--slides <RANGE>` | PPTX slide range (e.g. `1-5` or `3`) |
 | `--font-path <DIR>` | Additional font directory override (repeatable) |
+| `--streaming` | Compile large XLSX files in page-aligned row chunks |
+| `--streaming-chunk-size <ROWS>` | Target XLSX streaming chunk size (default: 1,000 rows) |
 
 ## Supported Formats
 

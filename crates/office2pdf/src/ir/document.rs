@@ -226,7 +226,8 @@ pub struct SheetChart {
 pub struct SheetChartPlacement {
     /// Horizontal offset of the anchor from the sheet's left edge, points.
     pub x_offset_pt: f64,
-    /// Vertical offset of the anchor from the sheet's content top, points.
+    /// Vertical offset of the anchor from the sheet's content top, points. A
+    /// continued page-row copy is relative to that window and can be negative.
     pub y_offset_pt: f64,
     /// Width in points, from the columns the anchor spans, before
     /// `print_scale`.
@@ -249,6 +250,13 @@ pub struct SheetChartPlacement {
     /// several chart layout paths switch model on whether a size was declared
     /// at all, so filling one in changes the chrome even at a scale of 1.
     pub print_scale: f64,
+    /// Left edge of the page-column clipping window, in points from the
+    /// page's content origin. `None` means zero.
+    pub clip_left_pt: Option<f64>,
+    /// Width of the page-column window this chart is clipped to. A paged copy
+    /// can carry a negative `x_offset_pt` so the next horizontal strip remains
+    /// in the same worksheet coordinate system.
+    pub clip_width_pt: Option<f64>,
 }
 
 /// A worksheet text box anchored to a sheet row.
@@ -260,17 +268,30 @@ pub struct SheetTextBox {
     /// Horizontal offset of the anchor from the sheet's left edge, points.
     pub x_offset_pt: f64,
     /// Vertical offset of the anchor from the sheet's content top, points
-    /// (issue #474).
+    /// (issue #474). A continued page-row copy is relative to that window and
+    /// can be negative.
     pub y_offset_pt: f64,
     pub width: f64,
     pub height: f64,
     pub paragraphs: Vec<super::elements::Paragraph>,
     /// Box fill color.
     pub fill: Option<super::style::Color>,
+    /// Box gradient fill. Takes precedence over a solid fill when present.
+    pub gradient_fill: Option<super::elements::GradientFill>,
     /// Box outline.
     pub border: Option<super::elements::BorderSide>,
     /// bodyPr anchor="ctr": center text vertically inside the box.
     pub vertical_center: bool,
+    /// Whole-sheet print scale. Kept separate from the frame so the text,
+    /// inset, fill, and border shrink with the anchored shape.
+    pub print_scale: f64,
+    /// Left edge of the page-column clipping window, in points from the
+    /// page's content origin. `None` means zero.
+    pub clip_left_pt: Option<f64>,
+    /// Width of the page-column window this text box is clipped to. A paged
+    /// copy can carry a negative `x_offset_pt` so text and shape ink continue
+    /// in place on later horizontal pages.
+    pub clip_width_pt: Option<f64>,
 }
 
 /// A worksheet drawing image anchored to a sheet row.
@@ -282,12 +303,17 @@ pub struct SheetImage {
     /// Horizontal offset of the anchor from the sheet's left edge, points.
     pub x_offset_pt: f64,
     /// Vertical offset of the anchor from the sheet's content top, points.
-    /// Excel overlays drawings on the grid at absolute worksheet
-    /// coordinates rather than placing them between rows (issue #474).
+    /// Excel overlays drawings on the grid at absolute worksheet coordinates
+    /// rather than placing them between rows (issue #474). A continued
+    /// page-row copy is relative to that window and can be negative.
     pub y_offset_pt: f64,
     pub image: super::elements::ImageData,
+    /// Left edge of the page-column clipping window, in points from the
+    /// page's content origin. Repeated print-title columns occupy the space
+    /// before this edge. `None` means zero.
+    pub clip_left_pt: Option<f64>,
     /// Width of the page-column window this image is clipped to, from the
-    /// page's content left edge. Set by drawing-width pagination: Excel clips
+    /// clipping window's left edge. Set by drawing-width pagination: Excel clips
     /// a drawing at the printable edge and continues it on the next
     /// page-column, so a paged copy may also carry a negative `x_offset_pt`
     /// (issue #713). `None` draws the image unclipped — and so does `Some`

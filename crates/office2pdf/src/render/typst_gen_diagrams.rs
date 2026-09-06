@@ -7,8 +7,12 @@ use crate::render::font_subst;
 enum ChartVariant {
     /// Axis-scaled bar/column plot with gridlines, tick labels, and a legend.
     AxisPlot,
-    /// Polyline plot over a value axis, for line and area charts.
+    /// Polyline plot over a value axis.
     LinePlot,
+    /// Filled regions over a value axis, accumulated by series when stacked.
+    AreaPlot,
+    /// Straight segments through points positioned on two numeric axes.
+    ScatterPlot,
     /// Circular plot whose wedges are each point's share of the total.
     PiePlot,
     /// One spoke per category radiating from a centre, each series a closed
@@ -25,11 +29,28 @@ fn chart_variant(chart: &Chart) -> ChartVariant {
     {
         return ChartVariant::AxisPlot;
     }
-    if matches!(chart.chart_type, ChartType::Line | ChartType::Area)
+    if matches!(chart.chart_type, ChartType::Line)
         && !chart.series.is_empty()
         && chart.categories.len() >= 2
     {
         return ChartVariant::LinePlot;
+    }
+    if matches!(chart.chart_type, ChartType::Area)
+        && !chart.series.is_empty()
+        && chart.categories.len() >= 2
+    {
+        return ChartVariant::AreaPlot;
+    }
+    if matches!(chart.chart_type, ChartType::Scatter)
+        && chart.series.len() == 1
+        && chart.categories.len() >= 2
+        && chart.series[0].values.len() == chart.categories.len()
+        && chart
+            .categories
+            .iter()
+            .all(|value| value.parse::<f64>().is_ok_and(|value| value.is_finite()))
+    {
+        return ChartVariant::ScatterPlot;
     }
     // A radar needs a closed ring of spokes, so two categories cannot make one.
     if is_radar(chart)
@@ -75,7 +96,11 @@ fn chart_fits_on_one_page(chart: &Chart) -> bool {
         ChartVariant::AxisPlot => chart_axis_extent(chart).1 + 24.0,
         // The polyline, pie and radar plots are a fixed size regardless of how
         // many points they carry.
-        ChartVariant::LinePlot | ChartVariant::PiePlot | ChartVariant::RadarPlot => return true,
+        ChartVariant::LinePlot
+        | ChartVariant::AreaPlot
+        | ChartVariant::ScatterPlot
+        | ChartVariant::PiePlot
+        | ChartVariant::RadarPlot => return true,
         ChartVariant::BorderedTable => {
             BORDERED_TABLE_CHROME_PT + chart.categories.len() as f64 * BORDERED_TABLE_ROW_PT
         }
@@ -85,10 +110,11 @@ fn chart_fits_on_one_page(chart: &Chart) -> bool {
 
 /// Generate Typst markup for a chart.
 ///
-/// Bar and column charts render as an axis-scaled plot; line and area charts
-/// as a polyline plot over the same axis; pie and doughnut charts as a wedge
-/// plot; and a radar carrying at least three categories and one positive value
-/// as a spoke-and-polygon plot. What is left — bubble, stock, surface, and a
+/// Bar and column charts render as an axis-scaled plot; line charts as a
+/// polyline; area charts as filled regions over the same value axis; pie and
+/// doughnut charts as a wedge plot; and a radar carrying at least three
+/// categories and one positive value as a spoke-and-polygon plot. What is left
+/// — bubble, stock, surface, and a
 /// radar too small or too flat to draw — falls back to a bordered box holding
 /// the title, a type label, and a data table.
 ///
@@ -185,6 +211,8 @@ fn generate_chart_body(
             return generate_chart_axis(out, chart, frame, sheet_frame_top_pt);
         }
         ChartVariant::LinePlot => return generate_chart_line_plot(out, chart, frame),
+        ChartVariant::AreaPlot => return generate_chart_line_plot(out, chart, frame),
+        ChartVariant::ScatterPlot => return generate_chart_line_plot(out, chart, frame),
         ChartVariant::PiePlot => return generate_chart_pie_plot(out, chart, frame),
         ChartVariant::RadarPlot => return generate_chart_radar_plot(out, chart, frame),
         ChartVariant::BorderedTable => {}
@@ -405,10 +433,7 @@ pub(super) fn excel_legend_trailing_gutter_pt(chart: &Chart, label: &str) -> Opt
     }
     let size_pt: f64 = chart_legend_text_pt(chart);
     let is_bold: bool = chart_legend_text_is_bold(chart);
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.legend_text_style);
     let terminal_delta_em: f64 = label
         .chars()
         .last()
@@ -463,11 +488,19 @@ fn write_series_marker(
     out: &mut String,
     series_index: usize,
     symbol: Option<MarkerSymbol>,
+    size_pt: Option<f64>,
     x: f64,
     y: f64,
     color: &str,
 ) {
-    out.push_str(&series_marker_markup(series_index, symbol, x, y, color));
+    out.push_str(&series_marker_markup(
+        series_index,
+        symbol,
+        size_pt,
+        x,
+        y,
+        color,
+    ));
 }
 
 /// The `#place`d markup for one series marker centred on (`x`, `y`), and the
@@ -478,11 +511,12 @@ fn write_series_marker(
 fn series_marker_markup(
     series_index: usize,
     symbol: Option<MarkerSymbol>,
+    size_pt: Option<f64>,
     x: f64,
     y: f64,
     color: &str,
 ) -> String {
-    let size: f64 = SERIES_MARKER_SIZE_PT;
+    let size: f64 = size_pt.unwrap_or(SERIES_MARKER_SIZE_PT);
     let half: f64 = size / 2.0;
     let left: String = format_f64(x - half);
     let top: String = format_f64(y - half);
@@ -550,13 +584,14 @@ fn plots_as_line(chart: &Chart, series: &crate::ir::ChartSeries) -> bool {
 /// The whole series, not just its symbol, because the sample has to match the
 /// weight the line is plotted at as well (issue #1113).
 fn line_legend_key(series_index: usize, series: &crate::ir::ChartSeries, color: &str) -> String {
-    let key_mid: f64 = SERIES_MARKER_SIZE_PT / 2.0;
+    let marker_size: f64 = series.marker_size_pt.unwrap_or(SERIES_MARKER_SIZE_PT);
+    let key_mid: f64 = marker_size / 2.0;
     format!(
         "#box(width: {}pt, height: {}pt, baseline: {}pt)[\
          #place(top + left, dx: 0pt, dy: {}pt, line(end: ({}pt, 0pt), stroke: {}pt + {color}))\
          {}]",
         format_f64(LEGEND_KEY_LEN_PT),
-        format_f64(SERIES_MARKER_SIZE_PT),
+        format_f64(marker_size),
         format_f64(LEGEND_KEY_BASELINE_PT),
         format_f64(key_mid),
         format_f64(LEGEND_KEY_LEN_PT),
@@ -564,6 +599,7 @@ fn line_legend_key(series_index: usize, series: &crate::ir::ChartSeries, color: 
         series_marker_markup(
             series_index,
             series.marker_symbol,
+            series.marker_size_pt,
             LEGEND_KEY_LEN_PT / 2.0,
             key_mid,
             color
@@ -789,7 +825,7 @@ fn chart_auto_axis(chart: &Chart, horizontal: bool, plot_w: f64, max_value: f64)
     if horizontal && matches!(chart.host, crate::ir::ChartHost::Presentation) {
         powerpoint_nice_axis(
             max_value,
-            chart_axis_text_pt(chart, chart.value_axis_text_style),
+            chart_axis_text_pt(chart, &chart.value_axis_text_style),
             plot_w,
         )
     } else {
@@ -906,14 +942,22 @@ fn chart_area_stroke(outline: &ChartAreaOutline, host: crate::ir::ChartHost) -> 
         // A width or colour the file left out, or one the host theme cannot
         // resolve, falls back to the automatic one rather than to nothing:
         // the file did ask for *a* line.
-        ChartAreaOutline::Explicit { width_pt, color } => format!(
-            "{}pt + {}",
-            format_f64(width_pt.unwrap_or(CHART_AUTOMATIC_LINE_PT)),
-            color.map_or_else(
+        ChartAreaOutline::Explicit {
+            width_pt,
+            color,
+            round_join,
+        } => {
+            let width = format_f64(width_pt.unwrap_or(CHART_AUTOMATIC_LINE_PT));
+            let paint = color.map_or_else(
                 || CHART_AUTOMATIC_LINE_RGB.to_string(),
-                |c| format!("rgb({}, {}, {})", c.r, c.g, c.b)
-            )
-        ),
+                |c| format!("rgb({}, {}, {})", c.r, c.g, c.b),
+            );
+            if *round_join {
+                format!("stroke(paint: {paint}, thickness: {width}pt, join: \"round\")")
+            } else {
+                format!("{width}pt + {paint}")
+            }
+        }
     }
 }
 
@@ -980,20 +1024,44 @@ pub(super) fn chart_text_pt(chart: &Chart) -> f64 {
 fn chart_legend_text_pt(chart: &Chart) -> f64 {
     chart
         .text_style
-        .resolved_size_pt(chart.legend_text_style)
+        .resolved_size_pt(&chart.legend_text_style)
         .unwrap_or(CHART_DEFAULT_TEXT_PT)
 }
 
 fn chart_legend_text_is_bold(chart: &Chart) -> bool {
     chart
         .text_style
-        .resolved_bold(chart.legend_text_style)
+        .resolved_bold(&chart.legend_text_style)
         .unwrap_or(false)
+}
+
+const CHART_DEFAULT_AXIS_TITLE_PT: f64 = 9.0;
+
+fn chart_axis_title_text_pt(chart: &Chart, title: &crate::ir::ChartTextStyle) -> f64 {
+    chart
+        .text_style
+        .resolved_size_pt(title)
+        .unwrap_or(CHART_DEFAULT_AXIS_TITLE_PT)
+}
+
+fn chart_axis_title_text_attrs(chart: &Chart, title: &crate::ir::ChartTextStyle) -> String {
+    let weight = if chart.text_style.resolved_bold(title).unwrap_or(true) {
+        ", weight: \"bold\""
+    } else {
+        ""
+    };
+    format!(
+        "{}{}{}{}",
+        weight,
+        chart_axis_text_fill(chart, title),
+        chart_text_spacing(chart, title, chart_axis_title_text_pt(chart, title)),
+        chart_text_font_attr(chart, title)
+    )
 }
 
 /// The size one axis' own labels take, honouring the `c:catAx`/`c:valAx`
 /// `c:txPr` that overrides the chart space's.
-pub(super) fn chart_axis_text_pt(chart: &Chart, axis: crate::ir::ChartTextStyle) -> f64 {
+pub(super) fn chart_axis_text_pt(chart: &Chart, axis: &crate::ir::ChartTextStyle) -> f64 {
     chart
         .text_style
         .resolved_size_pt(axis)
@@ -1008,7 +1076,7 @@ pub(super) fn chart_axis_text_pt(chart: &Chart, axis: crate::ir::ChartTextStyle)
 /// weight — kept theirs (issue #669).
 pub(super) fn chart_axis_text_weight(
     chart: &Chart,
-    axis: crate::ir::ChartTextStyle,
+    axis: &crate::ir::ChartTextStyle,
 ) -> &'static str {
     if chart.text_style.resolved_bold(axis).unwrap_or(false) {
         ", weight: \"bold\""
@@ -1022,7 +1090,7 @@ pub(super) fn chart_axis_text_weight(
 /// Empty where the chart declares nothing, so a chart that says nothing keeps
 /// the colour it has always been drawn in rather than being forced to a
 /// default this crate invented (issue #916).
-pub(super) fn chart_axis_text_fill(chart: &Chart, axis: crate::ir::ChartTextStyle) -> String {
+pub(super) fn chart_axis_text_fill(chart: &Chart, axis: &crate::ir::ChartTextStyle) -> String {
     match chart.text_style.resolved_color(axis) {
         Some(color) => format!(", fill: {}", fmt::rgb(&color)),
         None => String::new(),
@@ -1031,17 +1099,51 @@ pub(super) fn chart_axis_text_fill(chart: &Chart, axis: crate::ir::ChartTextStyl
 
 /// Character spacing one axis' labels declare, as Typst text arguments.
 ///
-/// DrawingML adds `spc` between glyphs and disables normal pair adjustment.
-/// Keeping ligatures or kerning enabled would swallow or distort part of that
-/// declared spacing, as it does for ordinary PowerPoint text (issue #1011).
-pub(super) fn chart_axis_text_tracking(chart: &Chart, axis: crate::ir::ChartTextStyle) -> String {
-    match chart.text_style.resolved_letter_spacing(axis) {
-        Some(spacing) if spacing != 0.0 => format!(
-            ", tracking: {}pt, ligatures: false, kerning: false",
-            format_f64(spacing)
-        ),
+/// DrawingML adds `spc` between glyphs. With no stated `kern` rule, normal pair
+/// adjustment is disabled so it cannot swallow part of the declared spacing.
+/// A stated rule wins and is resolved against this scope's effective size, as
+/// it is for ordinary DrawingML text.
+pub(super) fn chart_text_spacing(
+    chart: &Chart,
+    style: &crate::ir::ChartTextStyle,
+    size_pt: f64,
+) -> String {
+    let spacing = chart.text_style.resolved_letter_spacing(style);
+    let pair_kerning = chart.text_style.resolved_pair_kerning(style);
+    let tracking = match spacing {
+        Some(spacing) if spacing != 0.0 => {
+            format!(", tracking: {}pt, ligatures: false", format_f64(spacing))
+        }
         _ => String::new(),
+    };
+    let kerning = match pair_kerning {
+        Some(rule) => format!(", kerning: {}", rule.applies_at(Some(size_pt))),
+        None if spacing.is_some_and(|spacing| spacing != 0.0) => ", kerning: false".to_string(),
+        None => String::new(),
+    };
+    format!("{tracking}{kerning}")
+}
+
+fn chart_text_font_attr(chart: &Chart, style: &crate::ir::ChartTextStyle) -> String {
+    let family = chart
+        .text_style
+        .resolved_font_family(style)
+        .or(chart.text_font_family.as_deref());
+    match family {
+        Some(family) => format!(
+            ", font: {}",
+            font_subst::font_for_mixed_script_text(family, &chart.text_sample())
+        ),
+        None => String::new(),
     }
+}
+
+fn chart_text_family<'a>(chart: &'a Chart, style: &'a crate::ir::ChartTextStyle) -> &'a str {
+    chart
+        .text_style
+        .resolved_font_family(style)
+        .or(chart.text_font_family.as_deref())
+        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY)
 }
 
 /// Colour a data label is set in.
@@ -1050,28 +1152,53 @@ pub(super) fn chart_axis_text_tracking(chart: &Chart, axis: crate::ir::ChartText
 /// chosen because a bar-end label sits on the bar. A chart that declares one
 /// overrides it; a chart that declares nothing keeps the white it had, so no
 /// existing output moves (issue #916).
-pub(super) fn chart_data_label_fill(chart: &Chart) -> String {
-    match chart.text_style.color {
+pub(super) fn chart_data_label_fill(chart: &Chart, labels: &crate::ir::DataLabels) -> String {
+    match chart.text_style.resolved_color(&labels.text_style) {
         Some(color) => fmt::rgb(&color),
         None => "white".to_string(),
     }
 }
 
-/// Every `text` argument an axis label carries beyond its size: weight,
-/// colour, then character spacing. One slot so a label's format string does
-/// not grow a hole per property (issues #916 and #1011).
-pub(super) fn chart_axis_text_attrs(chart: &Chart, axis: crate::ir::ChartTextStyle) -> String {
+fn chart_data_label_attrs(chart: &Chart, labels: &crate::ir::DataLabels) -> String {
+    let weight = if chart
+        .text_style
+        .resolved_bold(&labels.text_style)
+        .unwrap_or(true)
+    {
+        ", weight: \"bold\""
+    } else {
+        ""
+    };
     format!(
-        "{}{}{}",
+        "{weight}, fill: {}{}{}",
+        chart_data_label_fill(chart, labels),
+        chart_text_spacing(chart, &labels.text_style, data_label_text_pt(chart, labels)),
+        chart_text_font_attr(chart, &labels.text_style)
+    )
+}
+
+/// Every `text` argument an axis label carries beyond its size: weight,
+/// colour, character spacing, then font. One slot so a label's format string does
+/// not grow a hole per property (issues #916 and #1011).
+pub(super) fn chart_axis_text_attrs(chart: &Chart, axis: &crate::ir::ChartTextStyle) -> String {
+    format!(
+        "{}{}{}{}",
         chart_axis_text_weight(chart, axis),
         chart_axis_text_fill(chart, axis),
-        chart_axis_text_tracking(chart, axis)
+        chart_text_spacing(chart, axis, chart_axis_text_pt(chart, axis)),
+        chart_text_font_attr(chart, axis)
     )
 }
 
 /// Every Typst text argument a legend entry inherits beyond its resolved size.
 fn chart_legend_text_attrs(chart: &Chart) -> String {
-    chart_axis_text_attrs(chart, chart.legend_text_style)
+    format!(
+        "{}{}{}{}",
+        chart_axis_text_weight(chart, &chart.legend_text_style),
+        chart_axis_text_fill(chart, &chart.legend_text_style),
+        chart_text_spacing(chart, &chart.legend_text_style, chart_legend_text_pt(chart)),
+        chart_text_font_attr(chart, &chart.legend_text_style)
+    )
 }
 
 /// Height of the box that vertically centres one value tick label on its
@@ -1103,7 +1230,7 @@ fn horizontal_value_label_gap(chart: &Chart) -> f64 {
     {
         PPTX_HORIZONTAL_VALUE_LABEL_GAP_PT
             + PPTX_HORIZONTAL_VALUE_LABEL_GAP_EM
-                * chart_axis_text_pt(chart, chart.value_axis_text_style)
+                * chart_axis_text_pt(chart, &chart.value_axis_text_style)
     } else {
         4.0
     }
@@ -1215,6 +1342,25 @@ fn write_tick_left_of_plot(
         format_f64(axis_x - outward),
         format_f64(y),
         format_f64(outward + inward),
+        stroke
+    );
+}
+
+/// Stroke one major tick across the value axis on the plot's right edge.
+fn write_tick_right_of_plot(
+    out: &mut String,
+    plot_right: f64,
+    y: f64,
+    reach: (f64, f64),
+    stroke: &str,
+) {
+    let (outside, inside) = reach;
+    let _ = writeln!(
+        out,
+        "#place(top + left, dx: {}pt, dy: {}pt, line(end: ({}pt, 0pt), stroke: {}))",
+        format_f64(plot_right - inside),
+        format_f64(y),
+        format_f64(outside + inside),
         stroke
     );
 }
@@ -1654,7 +1800,11 @@ fn chart_axis_extent(chart: &Chart) -> (f64, f64) {
     let legend: LegendBox = axis_legend_box(chart);
     let (label_gutter_w, label_gutter_h) = axis_label_gutters(chart, None);
     (
-        label_gutter_w + plot_w + legend.left + legend.right,
+        label_gutter_w
+            + plot_w
+            + secondary_value_axis_gutter_pt(chart)
+            + legend.left
+            + legend.right,
         plot_h + label_gutter_h + legend.top + legend.bottom,
     )
 }
@@ -1669,7 +1819,7 @@ fn chart_axis_extent(chart: &Chart) -> (f64, f64) {
 pub(super) fn chart_tick_band_pt(chart: &Chart) -> f64 {
     if chart.text_style.size_pt.is_some() || chart.value_axis_text_style.size_pt.is_some() {
         CHART_TICK_BAND_BASE_PT
-            + CHART_TICK_BAND_EM * chart_axis_text_pt(chart, chart.value_axis_text_style)
+            + CHART_TICK_BAND_EM * chart_axis_text_pt(chart, &chart.value_axis_text_style)
     } else {
         TICK_GAP
     }
@@ -1771,16 +1921,44 @@ const MAX_AXIS_TICKS: usize = 1000;
 /// An end the part leaves out keeps the automatic one.
 fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     let data_min: f64 = chart_auto_min_value(chart);
+    resolved_value_scale(
+        data_min,
+        chart_auto_max_value(chart),
+        matches!(chart.grouping, ChartGrouping::PercentStacked),
+        chart.value_axis_major_unit,
+        chart.value_axis_min,
+        chart.value_axis_max,
+        auto_axis,
+    )
+}
+
+/// Resolve one value-axis interval from its data and stated settings.
+///
+/// Kept independent of [`Chart`] so a combo chart's right axis can use the
+/// same automatic-minimum and stated-bound rules without borrowing the
+/// primary series or primary axis settings.
+fn resolved_value_scale(
+    data_min: f64,
+    data_max: f64,
+    percent_stacked: bool,
+    major_unit: Option<f64>,
+    stated_min: Option<f64>,
+    stated_max: Option<f64>,
+    auto_axis: (f64, f64),
+) -> ValueScale {
+    let automatic_minimum = |step: f64| {
+        if percent_stacked {
+            data_min
+        } else {
+            automatic_axis_minimum(data_min, step)
+        }
+    };
     // An axis reaching below zero has to count out its whole span rather than
     // the positive half of it: a chart whose data is entirely negative has an
     // automatic maximum of zero, and a step chosen from that would tick the
     // axis once per unit.
     let auto_axis: (f64, f64) = if data_min < 0.0 {
-        let top: f64 = if chart_auto_max_value(chart) > 0.0 {
-            auto_axis.0
-        } else {
-            0.0
-        };
+        let top: f64 = if data_max > 0.0 { auto_axis.0 } else { 0.0 };
         let step: f64 = nice_axis(top - data_min).1;
         // Both ends of an axis crossing zero land on a whole unit, so the
         // maximum the positive half of the data chose is raised to one.
@@ -1788,14 +1966,12 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     } else {
         auto_axis
     };
-    let (auto_max, auto_step) = axis_with_stated_unit(auto_axis, chart.value_axis_major_unit);
+    let (auto_max, auto_step) = axis_with_stated_unit(auto_axis, major_unit);
 
     let stated = |bound: Option<f64>| bound.filter(|value| value.is_finite());
-    let stated_unit: Option<f64> = chart
-        .value_axis_major_unit
-        .filter(|unit| unit.is_finite() && *unit > 0.0);
-    let (stated_min, stated_max) = (stated(chart.value_axis_min), stated(chart.value_axis_max));
-    let min: f64 = stated_min.unwrap_or_else(|| automatic_axis_minimum(data_min, auto_step));
+    let stated_unit: Option<f64> = major_unit.filter(|unit| unit.is_finite() && *unit > 0.0);
+    let (stated_min, stated_max) = (stated(stated_min), stated(stated_max));
+    let min: f64 = stated_min.unwrap_or_else(|| automatic_minimum(auto_step));
     let max: f64 = stated_max.unwrap_or(auto_max);
 
     // A stated interval carries its own automatic unit: Excel counts out the
@@ -1808,17 +1984,42 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
         (None, None) => auto_step,
     };
     // Re-seated on the final unit so an automatic minimum still lands on one.
-    let min: f64 = stated_min.unwrap_or_else(|| automatic_axis_minimum(data_min, step));
+    let min: f64 = stated_min.unwrap_or_else(|| automatic_minimum(step));
     if max > min {
         return ValueScale { min, max, step };
     }
     // A part stating a maximum at or below its minimum describes no interval
     // at all, so the automatic scale is the only thing left to draw against.
     ValueScale {
-        min: automatic_axis_minimum(data_min, auto_step),
+        min: automatic_minimum(auto_step),
         max: auto_max,
         step: auto_step,
     }
+}
+
+/// Scale of an independent right value axis.
+fn chart_secondary_value_scale(
+    chart: &Chart,
+    axis: &crate::ir::ChartSecondaryValueAxis,
+) -> ValueScale {
+    let values = axis
+        .series_indices
+        .iter()
+        .filter_map(|index| chart.series.get(*index))
+        .flat_map(|series| series.values.iter().copied());
+    let (data_min, data_max) = values.fold((0.0_f64, 0.0_f64), |(min, max), value| {
+        (min.min(value), max.max(value))
+    });
+    let auto_axis = nice_axis(data_max);
+    resolved_value_scale(
+        data_min,
+        data_max,
+        false,
+        axis.major_unit,
+        axis.min,
+        axis.max,
+        auto_axis,
+    )
 }
 
 /// The automatic axis minimum for data reaching down to `data_min`.
@@ -1843,31 +2044,50 @@ fn automatic_axis_minimum(data_min: f64, step: f64) -> f64 {
 /// their sum rather than the deepest single one. A line laid over the columns
 /// reads against the same axis and takes no part in any stack.
 fn chart_auto_min_value(chart: &Chart) -> f64 {
+    let on_secondary = |index: usize| {
+        chart
+            .secondary_value_axis
+            .as_ref()
+            .is_some_and(|axis| axis.series_indices.contains(&index))
+    };
     let overlaid: Vec<bool> = chart
         .series
         .iter()
-        .map(|series| plots_as_line(chart, series))
+        .enumerate()
+        .map(|(index, series)| plots_as_line(chart, series) && !on_secondary(index))
         .collect();
     let overlay_min: f64 = chart
         .series
         .iter()
         .zip(&overlaid)
-        .filter(|(_, is_line)| **is_line)
-        .flat_map(|(series, _)| series.values.iter())
+        .enumerate()
+        .filter(|(index, (_, is_line))| **is_line && !on_secondary(*index))
+        .flat_map(|(_, (series, _))| series.values.iter())
         .copied()
         .fold(0.0_f64, f64::min);
     match chart.grouping {
-        // Every stack is rescaled to fill the axis, so the scale is the
-        // percentage itself and has no negative end.
-        ChartGrouping::PercentStacked => 0.0,
+        // Each side of a percentage stack is rescaled independently. A chart
+        // carrying any negative value therefore needs the full negative side.
+        ChartGrouping::PercentStacked => chart
+            .series
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
+            .any(|value| *value < 0.0)
+            .then_some(-100.0)
+            .unwrap_or(0.0),
         ChartGrouping::Stacked => (0..chart.categories.len())
             .map(|index| {
                 chart
                     .series
                     .iter()
                     .zip(&overlaid)
-                    .filter(|(_, is_line)| !**is_line)
-                    .filter_map(|(series, _)| series.values.get(index).copied())
+                    .enumerate()
+                    .filter(|(series_index, (_, is_line))| {
+                        !**is_line && !on_secondary(*series_index)
+                    })
+                    .filter_map(|(_, (series, _))| series.values.get(index).copied())
                     .filter(|value| *value < 0.0)
                     .sum::<f64>()
             })
@@ -1875,7 +2095,9 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
         ChartGrouping::Clustered => chart
             .series
             .iter()
-            .flat_map(|series| series.values.iter())
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
             .copied()
             .fold(0.0_f64, f64::min),
     }
@@ -1889,17 +2111,25 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
 /// its category's total, so the axis must cover the tallest stack rather than
 /// the largest single segment.
 fn chart_auto_max_value(chart: &Chart) -> f64 {
+    let on_secondary = |index: usize| {
+        chart
+            .secondary_value_axis
+            .as_ref()
+            .is_some_and(|axis| axis.series_indices.contains(&index))
+    };
     let overlaid: Vec<bool> = chart
         .series
         .iter()
-        .map(|series| plots_as_line(chart, series))
+        .enumerate()
+        .map(|(index, series)| plots_as_line(chart, series) && !on_secondary(index))
         .collect();
     let overlay_max: f64 = chart
         .series
         .iter()
         .zip(&overlaid)
-        .filter(|(_, is_line)| **is_line)
-        .flat_map(|(series, _)| series.values.iter())
+        .enumerate()
+        .filter(|(index, (_, is_line))| **is_line && !on_secondary(*index))
+        .flat_map(|(_, (series, _))| series.values.iter())
         .copied()
         .fold(0.0_f64, f64::max);
     let bar_series = || {
@@ -1907,18 +2137,29 @@ fn chart_auto_max_value(chart: &Chart) -> f64 {
             .series
             .iter()
             .zip(&overlaid)
-            .filter(|(_, is_line)| !**is_line)
-            .map(|(series, _)| series)
+            .enumerate()
+            .filter(|(index, (_, is_line))| !**is_line && !on_secondary(*index))
+            .map(|(_, (series, _))| series)
     };
     match chart.grouping {
-        ChartGrouping::PercentStacked => 100.0,
+        ChartGrouping::PercentStacked => chart
+            .series
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
+            .any(|value| *value > 0.0)
+            .then_some(100.0)
+            .unwrap_or(0.0),
         ChartGrouping::Stacked => (0..chart.categories.len())
             .map(|index| category_total(bar_series(), index))
             .fold(overlay_max, f64::max),
         ChartGrouping::Clustered => chart
             .series
             .iter()
-            .flat_map(|series| series.values.iter())
+            .enumerate()
+            .filter(|(index, _)| !on_secondary(*index))
+            .flat_map(|(_, series)| series.values.iter())
             .copied()
             .fold(0.0_f64, f64::max),
     }
@@ -1952,34 +2193,28 @@ fn chart_value_axis_labels(chart: &Chart) -> Vec<String> {
 fn chart_column_value_label_widest_pt(chart: &Chart) -> Option<f64> {
     let bold: bool = chart
         .text_style
-        .resolved_bold(chart.value_axis_text_style)
+        .resolved_bold(&chart.value_axis_text_style)
         .unwrap_or(false);
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.value_axis_text_style);
     let widest_em: f64 = chart_value_axis_labels(chart)
         .iter()
         .filter_map(|label| chart_text_advance_em(family, bold, label))
         .fold(0.0_f64, f64::max);
-    (widest_em > 0.0).then(|| widest_em * chart_axis_text_pt(chart, chart.value_axis_text_style))
+    (widest_em > 0.0).then(|| widest_em * chart_axis_text_pt(chart, &chart.value_axis_text_style))
 }
 
 /// Clearance Excel leaves between a value tick label and the plot's left edge.
 fn excel_value_label_plot_gap_pt(chart: &Chart) -> Option<f64> {
     let bold: bool = chart
         .text_style
-        .resolved_bold(chart.value_axis_text_style)
+        .resolved_bold(&chart.value_axis_text_style)
         .unwrap_or(false);
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.value_axis_text_style);
     let (ascent_em, descent_em) = chart_face_line_metrics_em(family, bold)?;
     Some(
         (EXCEL_VALUE_LABEL_ASCENT_FRACTION * ascent_em
             + EXCEL_VALUE_LABEL_DESCENT_FRACTION * descent_em)
-            * chart_axis_text_pt(chart, chart.value_axis_text_style),
+            * chart_axis_text_pt(chart, &chart.value_axis_text_style),
     )
 }
 
@@ -2006,7 +2241,71 @@ fn chart_column_value_gutter_pt(chart: &Chart) -> f64 {
         return gutter;
     }
     CHART_COLUMN_VALUE_GUTTER_PT
-        + CHART_COLUMN_VALUE_GUTTER_EM * chart_axis_text_pt(chart, chart.value_axis_text_style)
+        + CHART_COLUMN_VALUE_GUTTER_EM * chart_axis_text_pt(chart, &chart.value_axis_text_style)
+}
+
+fn secondary_axis_number_format<'a>(
+    chart: &'a Chart,
+    axis: &'a crate::ir::ChartSecondaryValueAxis,
+) -> Option<&'a str> {
+    axis.number_format.as_deref().or_else(|| {
+        axis.series_indices
+            .iter()
+            .filter_map(|index| chart.series.get(*index))
+            .find_map(|series| series.number_format.as_deref())
+    })
+}
+
+fn secondary_value_axis_labels(
+    chart: &Chart,
+    axis: &crate::ir::ChartSecondaryValueAxis,
+) -> Vec<String> {
+    let number_format = secondary_axis_number_format(chart, axis);
+    chart_secondary_value_scale(chart, axis)
+        .ticks()
+        .into_iter()
+        .map(|tick| chart_value_label_formatted(tick, number_format))
+        .collect()
+}
+
+/// Width reserved to the right of a column plot for secondary tick labels.
+fn secondary_value_label_gutter_pt(chart: &Chart) -> f64 {
+    let Some(axis) = chart.secondary_value_axis.as_ref() else {
+        return 0.0;
+    };
+    if chart.text_style.size_pt.is_none() && axis.text_style.size_pt.is_none() {
+        return TICK_GAP + GAP;
+    }
+    let size_pt = chart_axis_text_pt(chart, &axis.text_style);
+    let bold = chart
+        .text_style
+        .resolved_bold(&axis.text_style)
+        .unwrap_or(false);
+    let family = chart_text_family(chart, &axis.text_style);
+    let widest = secondary_value_axis_labels(chart, axis)
+        .iter()
+        .filter_map(|label| chart_text_advance_em(family, bold, label))
+        .fold(0.0_f64, f64::max)
+        * size_pt;
+    let face_gap = chart_face_line_metrics_em(family, bold)
+        .map(|(ascent, descent)| {
+            (EXCEL_VALUE_LABEL_ASCENT_FRACTION * ascent
+                + EXCEL_VALUE_LABEL_DESCENT_FRACTION * descent)
+                * size_pt
+        })
+        .unwrap_or(GAP);
+    EXCEL_VALUE_LABEL_EDGE_PAD_PT + widest + face_gap
+}
+
+/// Total right-side chrome of an independent secondary value axis.
+fn secondary_value_axis_gutter_pt(chart: &Chart) -> f64 {
+    let Some(axis) = chart.secondary_value_axis.as_ref() else {
+        return 0.0;
+    };
+    secondary_value_label_gutter_pt(chart)
+        + axis.title.as_ref().map_or(0.0, |_| {
+            chart_axis_title_band_h(chart, &axis.title_text_style)
+        })
 }
 
 /// The box one vertical value tick label is right-aligned in, as
@@ -2051,7 +2350,7 @@ fn chart_column_value_label_x(chart: &Chart) -> f64 {
 
 /// The band one category takes across the category axis, at the declared size.
 pub(super) fn chart_category_band_pt(chart: &Chart) -> f64 {
-    ROW / CHART_DEFAULT_TEXT_PT * chart_axis_text_pt(chart, chart.category_axis_text_style)
+    ROW / CHART_DEFAULT_TEXT_PT * chart_axis_text_pt(chart, &chart.category_axis_text_style)
 }
 
 /// Width the category labels take down the left of a bar plot.
@@ -2067,15 +2366,12 @@ pub(super) fn chart_category_band_pt(chart: &Chart) -> f64 {
 /// Falls back to the flat constant where the face cannot be measured — wasm has
 /// no font search — so the gutter is never narrower than it was.
 pub(super) fn chart_category_gutter_pt(chart: &Chart) -> f64 {
-    let size_pt: f64 = chart_axis_text_pt(chart, chart.category_axis_text_style);
+    let size_pt: f64 = chart_axis_text_pt(chart, &chart.category_axis_text_style);
     let bold: bool = chart
         .text_style
-        .resolved_bold(chart.category_axis_text_style)
+        .resolved_bold(&chart.category_axis_text_style)
         .unwrap_or(false);
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.category_axis_text_style);
     let widest_em: f64 = chart
         .categories
         .iter()
@@ -2112,7 +2408,7 @@ fn chart_category_label_box_w(chart: &Chart) -> f64 {
     let has_declared_size: bool =
         chart.text_style.size_pt.is_some() || chart.category_axis_text_style.size_pt.is_some();
     let clearance: f64 = if has_declared_size && chart_category_label_widest_pt(chart).is_some() {
-        CHART_LABEL_EDGE_PAD_EM * chart_axis_text_pt(chart, chart.category_axis_text_style)
+        CHART_LABEL_EDGE_PAD_EM * chart_axis_text_pt(chart, &chart.category_axis_text_style)
     } else {
         GAP
     };
@@ -2130,18 +2426,15 @@ const CATEGORY_LABEL_ROTATION_DEG: f64 = 45.0;
 
 /// Face a category label is set in: family, weight and size.
 fn chart_category_label_face(chart: &Chart) -> (&str, bool, f64) {
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.category_axis_text_style);
     let bold: bool = chart
         .text_style
-        .resolved_bold(chart.category_axis_text_style)
+        .resolved_bold(&chart.category_axis_text_style)
         .unwrap_or(false);
     (
         family,
         bold,
-        chart_axis_text_pt(chart, chart.category_axis_text_style),
+        chart_axis_text_pt(chart, &chart.category_axis_text_style),
     )
 }
 
@@ -2174,7 +2467,7 @@ fn chart_category_label_advance_pt(chart: &Chart, label: &str) -> Option<f64> {
     let glyphs = prefix.chars().count() + usize::from(ellipsis_pt > 0.0);
     let tracking_pt = chart
         .text_style
-        .resolved_letter_spacing(chart.category_axis_text_style)
+        .resolved_letter_spacing(&chart.category_axis_text_style)
         .unwrap_or(0.0)
         * glyphs.saturating_sub(1) as f64;
     chart_text_advance_em(family, bold, prefix)
@@ -2206,7 +2499,7 @@ fn rotated_category_label_content(chart: &Chart, category: &str, label: &str) ->
     let (family, bold, size_pt) = chart_category_label_face(chart);
     let tracking_pt: f64 = chart
         .text_style
-        .resolved_letter_spacing(chart.category_axis_text_style)
+        .resolved_letter_spacing(&chart.category_axis_text_style)
         .unwrap_or(0.0);
     let swallowed_space: String = if category
         .strip_prefix(stem)
@@ -2323,7 +2616,7 @@ pub(super) fn chart_category_rotated_label_y(chart: &Chart, axis_y: f64) -> f64 
         axis_y
             + 2.0
             + PPTX_ROTATED_CATEGORY_LABEL_Y_SHIFT_EM
-                * chart_axis_text_pt(chart, chart.category_axis_text_style)
+                * chart_axis_text_pt(chart, &chart.category_axis_text_style)
     } else {
         axis_y + 2.0
     }
@@ -2350,7 +2643,7 @@ fn excel_category_label_y_shift_pt(chart: &Chart) -> f64 {
     {
         return 0.0;
     }
-    let size_pt: f64 = chart_axis_text_pt(chart, chart.category_axis_text_style);
+    let size_pt: f64 = chart_axis_text_pt(chart, &chart.category_axis_text_style);
     let native_grid_steps: f64 = ((size_pt - 8.0) / 4.0).round();
     EXCEL_CATEGORY_LABEL_BASE_Y_SHIFT_PT - native_grid_steps
 }
@@ -2380,7 +2673,7 @@ fn excel_bottom_legend_y_shift_pt(chart: &Chart) -> f64 {
 pub(super) fn chart_category_rotated_label_x(chart: &Chart, centre: f64, label_box_w: f64) -> f64 {
     let inset: f64 = if chart.host == crate::ir::ChartHost::Presentation {
         PPTX_ROTATED_CATEGORY_LABEL_X_INSET_EM
-            * chart_axis_text_pt(chart, chart.category_axis_text_style)
+            * chart_axis_text_pt(chart, &chart.category_axis_text_style)
     } else {
         0.0
     };
@@ -2403,7 +2696,7 @@ fn axis_label_gutters(chart: &Chart, frame: Option<(f64, f64)>) -> (f64, f64) {
             && (chart.text_style.size_pt.is_some()
                 || chart.category_axis_text_style.size_pt.is_some())
         {
-            let size_pt: f64 = chart_axis_text_pt(chart, chart.category_axis_text_style);
+            let size_pt: f64 = chart_axis_text_pt(chart, &chart.category_axis_text_style);
             EXCEL_COLUMN_BOTTOM_EDGE_PAD_PT
                 + EXCEL_COLUMN_CATEGORY_BAND_AT_NINE_PT
                 + EXCEL_COLUMN_CATEGORY_BAND_GROWTH_EM * (size_pt - 9.0)
@@ -2419,26 +2712,45 @@ fn axis_label_gutters(chart: &Chart, frame: Option<(f64, f64)>) -> (f64, f64) {
 
 /// Space the axis titles reserve, as `(left, bottom)` in points.
 ///
-/// The value-axis title runs a quarter turn anticlockwise down the left edge,
-/// so it costs width; the category-axis title sits flat under the tick labels
-/// and costs height (issue #552).
+/// The physical vertical-axis title runs a quarter turn anticlockwise down the
+/// left edge, so it costs width; the physical horizontal-axis title sits flat
+/// under the tick labels and costs height (issue #552). Horizontal bars swap
+/// the semantic category and value axes without swapping those physical bands.
 fn axis_title_gutters(chart: &Chart) -> (f64, f64) {
+    let (left, bottom) = physical_axis_titles(chart);
     (
-        if chart.value_axis_title.is_some() {
-            AXIS_TITLE_H
-        } else {
-            0.0
-        },
-        if chart.category_axis_title.is_some() {
-            AXIS_TITLE_H
-        } else {
-            0.0
-        },
+        left.map_or(0.0, |(_, style)| chart_axis_title_band_h(chart, style)),
+        bottom.map_or(0.0, |(_, style)| chart_axis_title_band_h(chart, style)),
     )
 }
 
-/// Thickness of an axis-title band: a 9pt line plus breathing room.
-const AXIS_TITLE_H: f64 = 15.0;
+/// Axis titles by physical placement: `(left, bottom)`.
+fn physical_axis_titles(
+    chart: &Chart,
+) -> (
+    Option<(&str, &crate::ir::ChartTextStyle)>,
+    Option<(&str, &crate::ir::ChartTextStyle)>,
+) {
+    let category = chart
+        .category_axis_title
+        .as_deref()
+        .map(|title| (title, &chart.category_axis_title_text_style));
+    let value = chart
+        .value_axis_title
+        .as_deref()
+        .map(|title| (title, &chart.value_axis_title_text_style));
+    if matches!(chart.chart_type, ChartType::Bar) {
+        (category, value)
+    } else {
+        (value, category)
+    }
+}
+
+/// Thickness of an axis-title band: the resolved line size plus the six-point
+/// breathing room the legacy 9pt title used.
+fn chart_axis_title_band_h(chart: &Chart, title: &crate::ir::ChartTextStyle) -> f64 {
+    chart_axis_title_text_pt(chart, title) + 6.0
+}
 
 /// Height of one data-label line: the span to centre across when the label
 /// sits on its segment, and the box to offset by when it sits at the
@@ -2544,14 +2856,17 @@ fn axis_plot_insets(chart: &Chart, frame: Option<(f64, f64)>) -> (f64, f64) {
             chart.text_style.size_pt.is_some() || chart.value_axis_text_style.size_pt.is_some();
         let top: f64 = if chart.host == crate::ir::ChartHost::Spreadsheet && has_declared_value_size
         {
-            let size_pt: f64 = chart_axis_text_pt(chart, chart.value_axis_text_style);
+            let size_pt: f64 = chart_axis_text_pt(chart, &chart.value_axis_text_style);
             EXCEL_COLUMN_TOP_INSET_AT_NINE_PT
                 + EXCEL_COLUMN_TOP_INSET_GROWTH_EM * (size_pt - 9.0).max(0.0)
         } else {
             CHART_COLUMN_TOP_PAD_PT
-                + CHART_COLUMN_TOP_PAD_EM * chart_axis_text_pt(chart, chart.value_axis_text_style)
+                + CHART_COLUMN_TOP_PAD_EM * chart_axis_text_pt(chart, &chart.value_axis_text_style)
         };
-        (top, CHART_COLUMN_RIGHT_PAD_PT)
+        (
+            top,
+            CHART_COLUMN_RIGHT_PAD_PT + secondary_value_axis_gutter_pt(chart),
+        )
     } else {
         (0.0, 0.0)
     }
@@ -2794,11 +3109,13 @@ fn chart_area_title_attrs(chart: &Chart) -> String {
         .or(chart.text_style.bold)
         .unwrap_or(true);
     let weight: &str = if bold { ", weight: \"bold\"" } else { "" };
-    let fill: String = match chart.text_style.resolved_color(chart.title_text_style) {
+    let fill: String = match chart.text_style.resolved_color(&chart.title_text_style) {
         Some(color) => format!(", fill: {}", fmt::rgb(&color)),
         None => String::new(),
     };
-    format!("{weight}{fill}")
+    let font = chart_text_font_attr(chart, &chart.title_text_style);
+    let spacing = chart_text_spacing(chart, &chart.title_text_style, chart_area_title_pt(chart));
+    format!("{weight}{fill}{spacing}{font}")
 }
 
 /// Draw a chart title in the width of the chart that owns it.
@@ -3215,10 +3532,7 @@ fn legend_entry_widths(
 ) -> Vec<f64> {
     let size_pt: f64 = chart_legend_text_pt(chart);
     let is_bold: bool = chart_legend_text_is_bold(chart);
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.legend_text_style);
     names
         .iter()
         .map(|name| {
@@ -3254,10 +3568,7 @@ fn excel_bottom_legend_row_adjustment(
     };
     let size_pt: f64 = chart_legend_text_pt(chart);
     let is_bold: bool = chart_legend_text_is_bold(chart);
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.legend_text_style);
     let Some(label_pt) =
         chart_text_advance_em(family, is_bold, last).map(|advance| advance * size_pt)
     else {
@@ -3324,10 +3635,7 @@ fn axis_legend_entry_metrics(chart: &Chart) -> LegendKeyMetrics {
 /// build (notably wasm) on the shape it always drew instead of sizing the key
 /// from a face the export never used.
 fn excel_legend_key_height_pt(chart: &Chart) -> Option<f64> {
-    let family: &str = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family: &str = chart_text_family(chart, &chart.legend_text_style);
     let (ascent_em, descent_em) =
         chart_face_line_metrics_em(family, chart_legend_text_is_bold(chart))?;
     Some(EXCEL_LEGEND_KEY_LINE_BOX_SHARE * (ascent_em + descent_em) * chart_legend_text_pt(chart))
@@ -3355,10 +3663,7 @@ fn powerpoint_right_legend_inset(
     }
     let size_pt: f64 = chart_legend_text_pt(chart);
     let is_bold: bool = chart_legend_text_is_bold(chart);
-    let family = chart
-        .text_font_family
-        .as_deref()
-        .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+    let family = chart_text_family(chart, &chart.legend_text_style);
     let widest_label = names
         .iter()
         .map(|name| chart_text_advance_em(family, is_bold, name))
@@ -3426,10 +3731,7 @@ fn axis_legend_box(chart: &Chart) -> LegendBox {
     ) {
         let size_pt: f64 = chart_legend_text_pt(chart);
         let is_bold: bool = chart_legend_text_is_bold(chart);
-        let family = chart
-            .text_font_family
-            .as_deref()
-            .unwrap_or(crate::defaults::TYPST_DEFAULT_FONT_FAMILY);
+        let family = chart_text_family(chart, &chart.legend_text_style);
         let widest_label = chart
             .series
             .iter()
@@ -3446,7 +3748,7 @@ fn axis_legend_box(chart: &Chart) -> LegendBox {
         let measured = widest_label + CHART_LEGEND_BASE_PAD_PT + CHART_LEGEND_PAD_EM * size_pt;
         let side = if chart
             .text_style
-            .resolved_size_pt(chart.legend_text_style)
+            .resolved_size_pt(&chart.legend_text_style)
             .is_none()
         {
             measured.max(LEGEND_ENTRY_W + GAP)
@@ -3563,7 +3865,7 @@ fn column_value_label_y(
 
     const EXCEL_VALUE_LABEL_BASELINE_PHASE_EM: f64 = 0.34;
     let continuous_sheet_y: f64 = frame_top + plot_y + (1.0 - frac) * plot_h;
-    let baseline_phase: f64 = chart_axis_text_pt(chart, chart.value_axis_text_style)
+    let baseline_phase: f64 = chart_axis_text_pt(chart, &chart.value_axis_text_style)
         * EXCEL_VALUE_LABEL_BASELINE_PHASE_EM;
     let independent_snap_delta: f64 = (continuous_sheet_y + baseline_phase).round()
         - continuous_sheet_y.round()
@@ -3659,6 +3961,10 @@ fn generate_chart_axis(
     // `<c:scaling><c:min>`/`<c:max>` fixes it; otherwise it is the automatic
     // scale, which reaches below zero only when the data does (issue #1184).
     let scale: ValueScale = chart_value_scale(chart, auto_axis);
+    let secondary_scale: Option<ValueScale> = chart
+        .secondary_value_axis
+        .as_ref()
+        .map(|axis| chart_secondary_value_scale(chart, axis));
     // Where the value-zero line lands across the plot: the baseline the bars
     // grow from, and the line the category axis stands on.
     let zero_frac: f64 = scale.zero_fraction();
@@ -3712,8 +4018,8 @@ fn generate_chart_axis(
                     "#place(top + left, dx: {}pt, dy: {}pt, box(width: 24pt)[#align(center)[#text(size: {}pt{})[{}]]])",
                     format_f64(x - 12.0),
                     format_f64(plot_y + plot_h + horizontal_value_label_gap(chart)),
-                    format_f64(chart_axis_text_pt(chart, chart.value_axis_text_style)),
-                    chart_axis_text_attrs(chart, chart.value_axis_text_style),
+                    format_f64(chart_axis_text_pt(chart, &chart.value_axis_text_style)),
+                    chart_axis_text_attrs(chart, &chart.value_axis_text_style),
                     escape_typst(&chart_value_label_formatted(
                         *tick,
                         chart_value_number_format(chart)
@@ -3743,22 +4049,53 @@ fn generate_chart_axis(
                         label_y
                             - chart_label_box_h(chart_axis_text_pt(
                                 chart,
-                                chart.value_axis_text_style
+                                &chart.value_axis_text_style
                             )) / 2.0
                     ),
                     format_f64(label_box_w),
                     format_f64(chart_label_box_h(chart_axis_text_pt(
                         chart,
-                        chart.value_axis_text_style
+                        &chart.value_axis_text_style
                     ))),
-                    format_f64(chart_axis_text_pt(chart, chart.value_axis_text_style)),
-                    chart_axis_text_attrs(chart, chart.value_axis_text_style),
+                    format_f64(chart_axis_text_pt(chart, &chart.value_axis_text_style)),
+                    chart_axis_text_attrs(chart, &chart.value_axis_text_style),
                     escape_typst(&chart_value_label_formatted(
                         *tick,
                         chart_value_number_format(chart)
                     ))
                 );
             }
+        }
+    }
+
+    // An independent right value axis labels only the line family bound to
+    // it. It does not add a second gridline set; the primary grid remains the
+    // plot's visual ruler while the right labels expose the line's own scale.
+    if !horizontal
+        && let (Some(axis), Some(secondary_scale)) =
+            (chart.secondary_value_axis.as_ref(), secondary_scale)
+        && !axis.deleted
+    {
+        let label_h = chart_label_box_h(chart_axis_text_pt(chart, &axis.text_style));
+        let label_x = plot_x + plot_w + GAP;
+        let label_w = (secondary_value_label_gutter_pt(chart) - GAP).max(0.0);
+        for tick in secondary_scale.ticks() {
+            let frac = secondary_scale.fraction(tick);
+            let y = column_value_chrome_y(chart, plot_y, plot_h, frac, sheet_frame_top_pt);
+            let _ = writeln!(
+                out,
+                "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(left + horizon)[#text(size: {}pt{})[{}]]])",
+                format_f64(label_x),
+                format_f64(y - label_h / 2.0),
+                format_f64(label_w),
+                format_f64(label_h),
+                format_f64(chart_axis_text_pt(chart, &axis.text_style)),
+                chart_axis_text_attrs(chart, &axis.text_style),
+                escape_typst(&chart_value_label_formatted(
+                    tick,
+                    secondary_axis_number_format(chart, axis)
+                ))
+            );
         }
     }
 
@@ -3884,13 +4221,13 @@ fn generate_chart_axis(
                 };
                 let _ = writeln!(
                     out,
-                    "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt, weight: \"bold\", fill: {})[{}]]])",
+                    "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
                     format_f64(label_x),
                     format_f64(label_y),
                     format_f64(label_w.max(0.0)),
                     format_f64(label_line_h),
                     format_f64(label_pt),
-                    chart_data_label_fill(chart),
+                    chart_data_label_attrs(chart, &s.data_labels),
                     escape_typst(&label)
                 );
             }
@@ -3908,8 +4245,8 @@ fn generate_chart_axis(
                 format_f64(row_top),
                 format_f64(chart_category_label_box_w(chart)),
                 format_f64(row),
-                format_f64(chart_axis_text_pt(chart, chart.category_axis_text_style)),
-                chart_axis_text_attrs(chart, chart.category_axis_text_style),
+                format_f64(chart_axis_text_pt(chart, &chart.category_axis_text_style)),
+                chart_axis_text_attrs(chart, &chart.category_axis_text_style),
                 escape_typst(category)
             );
         } else if category_labels_rotated {
@@ -3931,8 +4268,8 @@ fn generate_chart_axis(
                 format_f64(chart_category_rotated_label_y(chart, plot_y + plot_h)),
                 format_f64(CATEGORY_LABEL_ROTATION_DEG),
                 format_f64(label_box_w),
-                format_f64(chart_axis_text_pt(chart, chart.category_axis_text_style)),
-                chart_axis_text_attrs(chart, chart.category_axis_text_style),
+                format_f64(chart_axis_text_pt(chart, &chart.category_axis_text_style)),
+                chart_axis_text_attrs(chart, &chart.category_axis_text_style),
                 rotated_category_label_content(chart, category, &label)
             );
         } else {
@@ -3943,8 +4280,8 @@ fn generate_chart_axis(
                 format_f64(plot_y + plot_h + 2.0 + excel_category_label_y_shift_pt(chart)),
                 format_f64(row),
                 format_f64(chart_category_band_pt(chart)),
-                format_f64(chart_axis_text_pt(chart, chart.category_axis_text_style)),
-                chart_axis_text_attrs(chart, chart.category_axis_text_style),
+                format_f64(chart_axis_text_pt(chart, &chart.category_axis_text_style)),
+                chart_axis_text_attrs(chart, &chart.category_axis_text_style),
                 escape_typst(category)
             );
         }
@@ -3966,7 +4303,13 @@ fn generate_chart_axis(
             .take(categories)
             .enumerate()
             .map(|(cat_index, value)| {
-                let frac: f64 = scale.fraction(*value);
+                let series_scale = chart
+                    .secondary_value_axis
+                    .as_ref()
+                    .filter(|axis| axis.series_indices.contains(&s_index))
+                    .and(secondary_scale.as_ref())
+                    .unwrap_or(&scale);
+                let frac: f64 = series_scale.fraction(*value);
                 if horizontal {
                     // Bar charts run their categories bottom-up and place from
                     // the plot box's own top edge, as the column loop above does.
@@ -3995,7 +4338,15 @@ fn generate_chart_axis(
             );
         }
         for (x, y) in &points {
-            write_series_marker(out, s_index, s.marker_symbol, *x, *y, &color);
+            write_series_marker(
+                out,
+                s_index,
+                s.marker_symbol,
+                s.marker_size_pt,
+                *x,
+                *y,
+                &color,
+            );
         }
     }
 
@@ -4037,10 +4388,35 @@ fn generate_chart_axis(
     if let (true, Some(stroke)) = (bottom_axis_drawn, bottom_stroke.as_deref()) {
         write_bottom_axis_line(out, plot_x, bottom_axis_y, plot_w, stroke);
     }
+    if !horizontal
+        && let Some(axis) = chart.secondary_value_axis.as_ref()
+        && !axis.deleted
+        && let Some(stroke) = chart_chrome_stroke(axis.line)
+    {
+        write_left_axis_line(out, plot_x + plot_w, plot_y, plot_h, &stroke);
+        if let (Some(secondary_scale), Some(reach)) = (
+            secondary_scale,
+            tick_reach(
+                axis.major_tick_mark,
+                chart_axis_text_pt(chart, &axis.text_style),
+            ),
+        ) {
+            for tick in secondary_scale.ticks() {
+                let frac = secondary_scale.fraction(tick);
+                write_tick_right_of_plot(
+                    out,
+                    plot_x + plot_w,
+                    column_value_chrome_y(chart, plot_y, plot_h, frac, sheet_frame_top_pt),
+                    reach,
+                    &stroke,
+                );
+            }
+        }
+    }
     if value_axis_drawn
         && let Some(reach) = tick_reach(
             chart.value_axis_major_tick_mark,
-            chart_axis_text_pt(chart, chart.value_axis_text_style),
+            chart_axis_text_pt(chart, &chart.value_axis_text_style),
         )
     {
         // Every value tick sits on its own gridline, both being one major unit.
@@ -4075,7 +4451,7 @@ fn generate_chart_axis(
         && category_axis_drawn
         && let Some(reach) = tick_reach(
             chart.category_axis_major_tick_mark,
-            chart_axis_text_pt(chart, chart.category_axis_text_style),
+            chart_axis_text_pt(chart, &chart.category_axis_text_style),
         )
     {
         for boundary in 0..=categories {
@@ -4092,27 +4468,53 @@ fn generate_chart_axis(
         }
     }
 
-    // Axis titles, in the bands `axis_title_gutters` reserved for them.
-    if let Some(title) = chart.value_axis_title.as_deref() {
+    // Axis titles, in the physical bands `axis_title_gutters` reserved for
+    // them. Horizontal bars put categories on the left and values below.
+    let (left_axis_title, bottom_axis_title) = physical_axis_titles(chart);
+    if let Some((title, style)) = left_axis_title {
+        let title_h = chart_axis_title_band_h(chart, style);
         let _ = writeln!(
             out,
-            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: 9pt, weight: \"bold\")[{}]]]])",
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: {}pt{})[{}]]]])",
             format_f64(legend.left),
             format_f64(plot_y),
-            format_f64(AXIS_TITLE_H),
+            format_f64(title_h),
             format_f64(plot_h),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
             escape_typst(title)
         );
     }
-    if let Some(title) = chart.category_axis_title.as_deref() {
+    if let Some((title, style)) = bottom_axis_title {
         let (_, gutter_h) = axis_label_gutters(chart, frame);
+        let title_h = chart_axis_title_band_h(chart, style);
         let _ = writeln!(
             out,
-            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: 9pt, weight: \"bold\")[{}]]])",
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
             format_f64(plot_x),
-            format_f64(plot_y + plot_h + 2.0 + gutter_h - AXIS_TITLE_H),
+            format_f64(plot_y + plot_h + 2.0 + gutter_h - title_h),
             format_f64(plot_w),
-            format_f64(AXIS_TITLE_H),
+            format_f64(title_h),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
+            escape_typst(title)
+        );
+    }
+    if !horizontal
+        && let Some(axis) = chart.secondary_value_axis.as_ref()
+        && !axis.deleted
+        && let Some(title) = axis.title.as_deref()
+    {
+        let title_w = chart_axis_title_band_h(chart, &axis.title_text_style);
+        let _ = writeln!(
+            out,
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: {}pt{})[{}]]]])",
+            format_f64(plot_x + plot_w + secondary_value_label_gutter_pt(chart)),
+            format_f64(plot_y),
+            format_f64(title_w),
+            format_f64(plot_h),
+            format_f64(chart_axis_title_text_pt(chart, &axis.title_text_style)),
+            chart_axis_title_text_attrs(chart, &axis.title_text_style),
             escape_typst(title)
         );
     }
@@ -4149,14 +4551,11 @@ fn generate_chart_axis(
                 chart_tick_band_pt(chart),
             )
         } else {
-            let category_gutter_h: f64 = if chart.host == crate::ir::ChartHost::Spreadsheet
-                && (chart.text_style.size_pt.is_some()
-                    || chart.category_axis_text_style.size_pt.is_some())
-            {
-                axis_label_gutters(chart, frame).1
-            } else {
-                chart_category_band_pt(chart)
-            };
+            // The bottom legend clears the whole axis-label gutter, including
+            // an axis-title band even when its text size is inherited. Using
+            // only the category-label band puts that title on top of the
+            // legend for ordinary Excel charts with an implicit 9pt title.
+            let category_gutter_h: f64 = axis_label_gutters(chart, frame).1;
             (chart_tick_band_pt(chart) + GAP, category_gutter_h)
         };
         let (entry_x, entry_y) = legend.entry_origin(
@@ -4261,9 +4660,117 @@ fn generate_chart_bar(out: &mut String, chart: &Chart) {
     }
 }
 
-/// Render a line/area chart as a polyline plot over a value axis, matching
-/// the native Excel/PowerPoint composition (gridlines, tick labels, category
-/// axis, markers, legend).
+/// Each series' lower and upper value boundary at every category.
+///
+/// Stacked charts accumulate positive and negative values away from zero on
+/// separate sides. Percent stacks normalize each side independently. A
+/// standard chart reports zero as every lower boundary, so the same result can
+/// feed both bare polylines and filled areas.
+pub(super) fn stacked_series_boundaries(chart: &Chart) -> Vec<(Vec<f64>, Vec<f64>)> {
+    let categories = chart.categories.len();
+    let stacked = matches!(
+        chart.grouping,
+        ChartGrouping::Stacked | ChartGrouping::PercentStacked
+    );
+    let percent = matches!(chart.grouping, ChartGrouping::PercentStacked);
+    let positive_totals: Vec<f64> = (0..categories)
+        .map(|index| {
+            chart
+                .series
+                .iter()
+                .filter_map(|item| item.values.get(index))
+                .filter(|value| **value > 0.0)
+                .sum()
+        })
+        .collect();
+    let negative_totals: Vec<f64> = (0..categories)
+        .map(|index| {
+            chart
+                .series
+                .iter()
+                .filter_map(|item| item.values.get(index))
+                .filter(|value| **value < 0.0)
+                .map(|value| value.abs())
+                .sum()
+        })
+        .collect();
+    let mut positive_base = vec![0.0; categories];
+    let mut negative_base = vec![0.0; categories];
+
+    chart
+        .series
+        .iter()
+        .map(|series| {
+            let points = series.values.len().min(categories);
+            let mut bottoms = Vec::with_capacity(points);
+            let mut tops = Vec::with_capacity(points);
+            for (index, raw) in series.values.iter().copied().take(categories).enumerate() {
+                let value = if percent && raw > 0.0 {
+                    let total = positive_totals[index];
+                    if total == 0.0 {
+                        0.0
+                    } else {
+                        raw / total * 100.0
+                    }
+                } else if percent && raw < 0.0 {
+                    let total = negative_totals[index];
+                    if total == 0.0 {
+                        0.0
+                    } else {
+                        raw / total * 100.0
+                    }
+                } else {
+                    raw
+                };
+                let base = if stacked {
+                    if value < 0.0 {
+                        negative_base[index]
+                    } else {
+                        positive_base[index]
+                    }
+                } else {
+                    0.0
+                };
+                let top = base + value;
+                if stacked {
+                    if value < 0.0 {
+                        negative_base[index] = top;
+                    } else {
+                        positive_base[index] = top;
+                    }
+                }
+                bottoms.push(base);
+                tops.push(top);
+            }
+            (bottoms, tops)
+        })
+        .collect()
+}
+
+/// Automatic numeric-axis interval for values that may sit on either side of
+/// zero. Scatter x positions use this without mutating the chart's y-axis
+/// settings.
+fn automatic_numeric_scale(data_min: f64, data_max: f64) -> ValueScale {
+    let initial: (f64, f64) = nice_axis(data_max.max(0.0));
+    let (max, step): (f64, f64) = if data_min < 0.0 {
+        let top: f64 = if data_max > 0.0 { initial.0 } else { 0.0 };
+        let step: f64 = nice_axis(top - data_min).1;
+        ((top / step - 1e-9).ceil().max(0.0) * step, step)
+    } else {
+        initial
+    };
+    ValueScale {
+        min: automatic_axis_minimum(data_min, step),
+        max,
+        step,
+    }
+}
+
+/// Render a line, area, or numeric scatter chart over a value axis, matching the native
+/// Excel/PowerPoint composition (gridlines, tick labels, category axis,
+/// markers, legend). An area chart closes one filled region per series against
+/// its prior cumulative boundary; an ordinary line remains a bare polyline;
+/// and a scatter positions every point from its numeric x value.
 fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64, f64)>) {
     const PLOT_W: f64 = 320.0;
     const PLOT_H: f64 = 210.0;
@@ -4279,16 +4786,39 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
 
     let categories: usize = chart.categories.len();
     let series: &[crate::ir::ChartSeries] = &chart.series;
+    let is_area: bool = matches!(chart.chart_type, ChartType::Area);
+    let is_scatter: bool = matches!(chart.chart_type, ChartType::Scatter);
+    let scatter_x_values: Vec<f64> = if is_scatter {
+        chart
+            .categories
+            .iter()
+            .filter_map(|value| value.parse::<f64>().ok())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let scatter_x_scale: Option<ValueScale> = is_scatter.then(|| {
+        let min: f64 = scatter_x_values
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let max: f64 = scatter_x_values
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        automatic_numeric_scale(min, max)
+    });
 
-    let max_value: f64 = series
-        .iter()
-        .flat_map(|s| s.values.iter())
-        .copied()
-        .fold(0.0_f64, f64::max);
+    let max_value: f64 = chart_auto_max_value(chart);
     // As in `generate_chart_axis`, the axis spans the interval the part states
     // and only otherwise the automatic one, so a point below zero has a floor
     // to dip towards (issue #1184).
-    let scale: ValueScale = chart_value_scale(chart, nice_axis(max_value));
+    let auto_axis: (f64, f64) = if matches!(chart.grouping, ChartGrouping::PercentStacked) {
+        (100.0, 20.0)
+    } else {
+        nice_axis(max_value)
+    };
+    let scale: ValueScale = chart_value_scale(chart, auto_axis);
 
     // As in `generate_chart_axis`: the title takes a band from the content,
     // while the full chart-area outline stays around both (issue #1216).
@@ -4304,22 +4834,24 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         frame.map(|(width, height)| (width, (height - title_h).max(MIN_PLOT_PT)));
 
     let legend: LegendBox = LegendBox::new(chart.legend_position, LINE_LEGEND_ROW_H, LEGEND_W);
+    let (title_left, title_bottom) = axis_title_gutters(chart);
     // A framed chart fills its `<p:graphicFrame>`; a flowed one keeps the
     // intrinsic plot size (issue #548).
     let (plot_w, plot_h) = match frame {
         Some((frame_w, frame_h)) => (
-            (frame_w - (VALUE_GAP + GAP) - legend.left - legend.right).max(MIN_PLOT_PT),
-            (frame_h - CAT_GAP - legend.top - legend.bottom).max(MIN_PLOT_PT),
+            (frame_w - title_left - (VALUE_GAP + GAP) - legend.left - legend.right)
+                .max(MIN_PLOT_PT),
+            (frame_h - title_bottom - CAT_GAP - legend.top - legend.bottom).max(MIN_PLOT_PT),
         ),
         None => (PLOT_W, PLOT_H),
     };
-    let plot_x: f64 = legend.left + VALUE_GAP + GAP;
+    let plot_x: f64 = legend.left + title_left + VALUE_GAP + GAP;
     let plot_y: f64 = legend.top;
     let (total_w, total_h) = match frame {
         Some(extent) => extent,
         None => (
-            legend.left + VALUE_GAP + GAP + PLOT_W + legend.right,
-            legend.top + PLOT_H + CAT_GAP + legend.bottom,
+            legend.left + title_left + VALUE_GAP + GAP + PLOT_W + legend.right,
+            legend.top + PLOT_H + CAT_GAP + title_bottom + legend.bottom,
         ),
     };
     let wraps_title: bool = write_chart_area_start(
@@ -4357,16 +4889,16 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 out,
                 "#place(top + left, dx: 0pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(right + horizon)[#text(size: {}pt{})[{}]]])",
                 format_f64(
-                    y - chart_label_box_h(chart_axis_text_pt(chart, chart.value_axis_text_style))
+                    y - chart_label_box_h(chart_axis_text_pt(chart, &chart.value_axis_text_style))
                         / 2.0
                 ),
-                format_f64(VALUE_GAP),
+                format_f64(legend.left + title_left + VALUE_GAP),
                 format_f64(chart_label_box_h(chart_axis_text_pt(
                     chart,
-                    chart.value_axis_text_style
+                    &chart.value_axis_text_style
                 ))),
-                format_f64(chart_axis_text_pt(chart, chart.value_axis_text_style)),
-                chart_axis_text_attrs(chart, chart.value_axis_text_style),
+                format_f64(chart_axis_text_pt(chart, &chart.value_axis_text_style)),
+                chart_axis_text_attrs(chart, &chart.value_axis_text_style),
                 escape_typst(&chart_value_label_formatted(
                     *tick,
                     chart_value_number_format(chart)
@@ -4375,54 +4907,93 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         }
     }
 
-    // The category axis is split into one band per category, and both the point
-    // and its label sit at their band's centre — `<c:crossBetween val="between"/>`,
-    // which is what every category axis in the fixture corpus asks for and what
-    // the category tick marks below are the boundaries of. PowerPoint's own
-    // export of `tests/fixtures/pptx/line-chart.pptx` spaces its four points
-    // 90.91pt apart over a 363.65pt axis, the first of them half a band in
-    // (issue #672).
-    //
-    // TODO(crossBetween): the element itself is not parsed, so an axis asking
-    // for `midCat` — points on the boundaries, the series spanning the plot
-    // edge to edge — is laid out as `between` as well.
-    //
-    // `chart_variant` only routes a chart with two categories or more here, but
-    // the band width still has to be safe if that ever changes.
+    // A line chart centres points inside category bands (`between`). An area
+    // chart puts the first and last points on the plot edges (`midCat`), so its
+    // filled regions span the complete plot. A scatter uses the fraction of its
+    // numeric x-axis interval. Preflight admits only the geometry this branch
+    // draws.
     let band_w: f64 = plot_w / categories.max(1) as f64;
-    let point_x = |index: usize| -> f64 { plot_x + (index as f64 + 0.5) * band_w };
+    let point_x = |index: usize| -> f64 {
+        if let Some(x_scale) = scatter_x_scale {
+            plot_x
+                + x_scale.fraction(scatter_x_values.get(index).copied().unwrap_or(x_scale.min))
+                    * plot_w
+        } else if is_area {
+            plot_x + index as f64 * plot_w / (categories - 1).max(1) as f64
+        } else {
+            plot_x + (index as f64 + 0.5) * band_w
+        }
+    };
     let point_y = |value: f64| -> f64 { plot_y + (1.0 - scale.fraction(value)) * plot_h };
     // The category axis stands on the value-zero line, wherever the interval
     // puts it (issue #1184).
     let category_axis_y: f64 = plot_y + (1.0 - scale.zero_fraction()) * plot_h;
 
-    // Category axis labels.
+    // Category or numeric x-axis labels.
     if category_axis_drawn {
-        for (index, category) in chart.categories.iter().enumerate() {
-            let x: f64 = point_x(index);
+        let labels: Vec<(f64, String)> = if let Some(x_scale) = scatter_x_scale {
+            x_scale
+                .ticks()
+                .into_iter()
+                .map(|tick| {
+                    (
+                        plot_x + x_scale.fraction(tick) * plot_w,
+                        chart_value_label_formatted(tick, None),
+                    )
+                })
+                .collect()
+        } else {
+            chart
+                .categories
+                .iter()
+                .enumerate()
+                .map(|(index, category)| (point_x(index), category.clone()))
+                .collect()
+        };
+        for (x, label) in labels {
             let _ = writeln!(
                 out,
                 "#place(top + left, dx: {}pt, dy: {}pt, box(width: 24pt)[#align(center)[#text(size: {}pt{})[{}]]])",
                 format_f64(x - 12.0),
                 format_f64(plot_y + plot_h + 3.0),
-                format_f64(chart_axis_text_pt(chart, chart.category_axis_text_style)),
-                chart_axis_text_attrs(chart, chart.category_axis_text_style),
-                escape_typst(category)
+                format_f64(chart_axis_text_pt(chart, &chart.category_axis_text_style)),
+                chart_axis_text_attrs(chart, &chart.category_axis_text_style),
+                escape_typst(&label)
             );
         }
     }
 
-    // Series polylines + markers.
+    // Series polylines or closed area regions, plus markers. Positive and
+    // negative values accumulate away from zero on separate sides, as Office
+    // stacks them; a standard area series closes against zero independently.
+    let boundaries = stacked_series_boundaries(chart);
     for (s_index, s) in series.iter().enumerate() {
         let color: String = series_color(s, s_index, 0, &chart.theme_accent_colors);
-        let points: Vec<(f64, f64)> = s
-            .values
+        let (bottom_values, top_values) = &boundaries[s_index];
+        let bottoms: Vec<(f64, f64)> = bottom_values
             .iter()
             .enumerate()
             .map(|(index, value)| (point_x(index), point_y(*value)))
             .collect();
-        if points.len() >= 2 {
-            let coords: String = points
+        let tops: Vec<(f64, f64)> = top_values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (point_x(index), point_y(*value)))
+            .collect();
+        if is_area {
+            let coords: String = tops
+                .iter()
+                .chain(bottoms.iter().rev())
+                .map(|(x, y)| format!("({}pt, {}pt)", format_f64(*x), format_f64(*y)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(
+                out,
+                "#place(top + left, path(fill: {color}, stroke: {}pt + {color}, closed: true, {coords}))",
+                format_f64(series_line_pt(s))
+            );
+        } else if tops.len() >= 2 {
+            let coords: String = tops
                 .iter()
                 .map(|(x, y)| format!("({}pt, {}pt)", format_f64(*x), format_f64(*y)))
                 .collect::<Vec<_>>()
@@ -4434,8 +5005,36 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             );
         }
         // Point markers: the symbol the series names, else the shape cycle.
-        for (x, y) in &points {
-            write_series_marker(out, s_index, s.marker_symbol, *x, *y, &color);
+        for (index, (x, y)) in tops.iter().enumerate() {
+            write_series_marker(
+                out,
+                s_index,
+                s.marker_symbol,
+                s.marker_size_pt,
+                *x,
+                *y,
+                &color,
+            );
+            if is_scatter
+                && let Some(label) =
+                    data_label_text(chart, s, index, s.values.iter().copied().sum())
+            {
+                let label_pt: f64 = data_label_text_pt(chart, &s.data_labels);
+                let label_w: f64 = 40.0;
+                let label_h: f64 = data_label_line_h(chart, &s.data_labels);
+                let marker_radius: f64 = s.marker_size_pt.unwrap_or(SERIES_MARKER_SIZE_PT) / 2.0;
+                let _ = writeln!(
+                    out,
+                    "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
+                    format_f64(*x - label_w / 2.0),
+                    format_f64(*y - marker_radius - label_h - 2.0),
+                    format_f64(label_w),
+                    format_f64(label_h),
+                    format_f64(label_pt),
+                    chart_data_label_attrs(chart, &s.data_labels),
+                    escape_typst(&label)
+                );
+            }
         }
     }
 
@@ -4453,7 +5052,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
     if value_axis_drawn
         && let Some(reach) = tick_reach(
             chart.value_axis_major_tick_mark,
-            chart_axis_text_pt(chart, chart.value_axis_text_style),
+            chart_axis_text_pt(chart, &chart.value_axis_text_style),
         )
     {
         // Every value tick sits on its own gridline, both being one major unit.
@@ -4464,26 +5063,66 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             }
         }
     }
-    // The boundaries of the bands `point_x` centres each category in, so every
-    // category label sits midway between two ticks.
+    // Line charts tick every category-band boundary. Area charts tick the
+    // `midCat` points themselves. Scatter ticks its numeric x-axis units.
     if categories > 0
         && category_axis_drawn
         && let Some(reach) = tick_reach(
             chart.category_axis_major_tick_mark,
-            chart_axis_text_pt(chart, chart.category_axis_text_style),
+            chart_axis_text_pt(chart, &chart.category_axis_text_style),
         )
     {
-        for boundary in 0..=categories {
+        let tick_xs: Vec<f64> = if let Some(x_scale) = scatter_x_scale {
+            x_scale
+                .ticks()
+                .into_iter()
+                .map(|tick| plot_x + x_scale.fraction(tick) * plot_w)
+                .collect()
+        } else if is_area {
+            (0..categories).map(point_x).collect()
+        } else {
+            (0..=categories)
+                .map(|boundary| plot_x + boundary as f64 * band_w)
+                .collect()
+        };
+        for x in tick_xs {
             if let Some(stroke) = category_stroke.as_deref() {
-                write_tick_under_plot(
-                    out,
-                    plot_x + boundary as f64 * band_w,
-                    category_axis_y,
-                    reach,
-                    stroke,
-                );
+                write_tick_under_plot(out, x, category_axis_y, reach, stroke);
             }
         }
+    }
+
+    // Axis titles occupy the same physical bands as bar and column titles:
+    // the value title down the left edge and the category or numeric x title
+    // below the tick labels.
+    let (left_axis_title, bottom_axis_title) = physical_axis_titles(chart);
+    if let Some((title, style)) = left_axis_title {
+        let title_h: f64 = chart_axis_title_band_h(chart, style);
+        let _ = writeln!(
+            out,
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: {}pt{})[{}]]]])",
+            format_f64(legend.left),
+            format_f64(plot_y),
+            format_f64(title_h),
+            format_f64(plot_h),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
+            escape_typst(title)
+        );
+    }
+    if let Some((title, style)) = bottom_axis_title {
+        let title_h: f64 = chart_axis_title_band_h(chart, style);
+        let _ = writeln!(
+            out,
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
+            format_f64(plot_x),
+            format_f64(plot_y + plot_h + CAT_GAP),
+            format_f64(plot_w),
+            format_f64(title_h),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
+            escape_typst(title)
+        );
     }
 
     // Legend on the edge `<c:legendPos>` asks for — none when the chart
@@ -4517,7 +5156,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 plot_x - (VALUE_GAP + GAP),
                 plot_y,
                 VALUE_GAP + GAP + plot_w,
-                plot_h + CAT_GAP,
+                plot_h + CAT_GAP + title_bottom,
             ),
             LegendEntryLayout {
                 row_h: LINE_LEGEND_ROW_H,
@@ -4528,7 +5167,15 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 horizontal_x_shift: 0.0,
             },
         );
-        let key: String = line_legend_key(s_index, s, &color);
+        let key: String = if is_area {
+            format!(
+                "#box(width: {}pt, height: {}pt, fill: {color})",
+                format_f64(LEGEND_KEY_LEN_PT),
+                format_f64(s.marker_size_pt.unwrap_or(SERIES_MARKER_SIZE_PT))
+            )
+        } else {
+            line_legend_key(s_index, s, &color)
+        };
         let _ = writeln!(
             out,
             "#place(top + left, dx: {}pt, dy: {}pt, box[{key}#h({}pt)#text(size: {}pt{})[{}]])",
@@ -4693,7 +5340,7 @@ fn generate_chart_radar_plot(out: &mut String, chart: &Chart, frame: Option<(f64
     }
 
     // The value tick labels, read up the first spoke as Office reads them.
-    let label_pt: f64 = chart_axis_text_pt(chart, chart.value_axis_text_style);
+    let label_pt: f64 = chart_axis_text_pt(chart, &chart.value_axis_text_style);
     if !chart.value_axis_deleted {
         for unit in major_units(nice_max, step) {
             if unit <= 0.0 {
@@ -4708,7 +5355,7 @@ fn generate_chart_radar_plot(out: &mut String, chart: &Chart, frame: Option<(f64
                 format_f64(RADAR_VALUE_GAP),
                 format_f64(chart_label_box_h(label_pt)),
                 format_f64(label_pt),
-                chart_axis_text_attrs(chart, chart.value_axis_text_style),
+                chart_axis_text_attrs(chart, &chart.value_axis_text_style),
                 chart_value_label(unit)
             );
         }
@@ -4731,14 +5378,22 @@ fn generate_chart_radar_plot(out: &mut String, chart: &Chart, frame: Option<(f64
             format_f64(series_line_pt(series))
         );
         for (x, y) in &points {
-            write_series_marker(out, series_index, series.marker_symbol, *x, *y, &color);
+            write_series_marker(
+                out,
+                series_index,
+                series.marker_symbol,
+                series.marker_size_pt,
+                *x,
+                *y,
+                &color,
+            );
         }
     }
 
     // The category labels, each just outside its spoke's end.
     if !chart.category_axis_deleted {
-        let category_pt: f64 = chart_axis_text_pt(chart, chart.category_axis_text_style);
-        let weight: String = chart_axis_text_attrs(chart, chart.category_axis_text_style);
+        let category_pt: f64 = chart_axis_text_pt(chart, &chart.category_axis_text_style);
+        let weight: String = chart_axis_text_attrs(chart, &chart.category_axis_text_style);
         for (index, category) in chart.categories.iter().enumerate() {
             let a: f64 = angle(index);
             let label_x: f64 = centre_x + (radius + GAP) * a.cos();
@@ -4908,7 +5563,7 @@ fn generate_chart_pie_plot(out: &mut String, chart: &Chart, frame: Option<(f64, 
             let label_w: f64 = radius;
             let _ = writeln!(
                 out,
-                "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt)[#align(center)[#text(size: {}pt, weight: \"bold\", fill: {})[{}]]])",
+                "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt)[#align(center)[#text(size: {}pt{})[{}]]])",
                 format_f64(centre_x + label_radius * bisector.cos() - label_w / 2.0),
                 format_f64(
                     centre_y + label_radius * bisector.sin()
@@ -4916,7 +5571,7 @@ fn generate_chart_pie_plot(out: &mut String, chart: &Chart, frame: Option<(f64, 
                 ),
                 format_f64(label_w),
                 format_f64(label_pt),
-                chart_data_label_fill(chart),
+                chart_data_label_attrs(chart, &series.data_labels),
                 escape_typst(&label)
             );
         }

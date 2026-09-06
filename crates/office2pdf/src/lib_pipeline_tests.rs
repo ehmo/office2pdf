@@ -7,6 +7,30 @@ use crate::ir::*;
 use crate::pipeline::{extend_document_fonts, load_additional_fonts};
 
 #[test]
+fn test_standard_render_page_limit_stops_before_typst_stack_overflow() {
+    let error = crate::pipeline::ensure_standard_page_count(1_601).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "resource limit exceeded: document pages is 1601, limit is 1600"
+    );
+    assert!(crate::pipeline::ensure_standard_page_count(1_600).is_ok());
+}
+
+#[test]
+fn test_render_document_enforces_standard_page_limit() {
+    let mut doc = make_simple_document("Plain text");
+    doc.pages = vec![doc.pages[0].clone(); 1_601];
+
+    let error = render_document(&doc).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "resource limit exceeded: document pages is 1601, limit is 1600"
+    );
+}
+
+#[test]
 fn test_convert_unsupported_format() {
     let result = convert("test.txt");
     assert!(result.is_err());

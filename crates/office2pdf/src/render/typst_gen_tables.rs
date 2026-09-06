@@ -434,6 +434,9 @@ fn generate_table_rows(
             // A cell's own text column: the columns it spans, less the inset
             // that keeps its text off the border (issue #626).
             let enclosing_measure_pt: Option<f64> = ctx.available_measure_pt;
+            let enclosing_spill_page_remaining_pt: Option<f64> = ctx.spill_page_remaining_pt;
+            let enclosing_spill_page_left_to_content_right_pt: Option<f64> =
+                ctx.spill_page_left_to_content_right_pt;
             if !column_widths.is_empty() {
                 let inset: Insets = cell_inset_with_border(cell, default_cell_padding);
                 let span_width_pt: f64 = column_widths
@@ -443,6 +446,25 @@ fn generate_table_rows(
                     .sum();
                 ctx.available_measure_pt =
                     Some(span_width_pt - inset.left - inset.right).filter(|measure| *measure > 0.0);
+                ctx.spill_page_remaining_pt = if ctx.table_depth == 1 {
+                    ctx.sheet_page_right_from_table_left_pt
+                        .map(|page_right| {
+                            page_right
+                                - column_widths.iter().take(col_pos).sum::<f64>()
+                                - inset.left
+                        })
+                        .filter(|remaining| *remaining > 0.0)
+                } else {
+                    None
+                };
+                ctx.spill_page_left_to_content_right_pt = if ctx.table_depth == 1 {
+                    ctx.sheet_page_left_from_table_left_pt.map(|page_left| {
+                        page_left + column_widths.iter().take(col_pos).sum::<f64>() + span_width_pt
+                            - inset.right
+                    })
+                } else {
+                    None
+                };
             }
             generate_table_cell(
                 out,
@@ -461,6 +483,8 @@ fn generate_table_rows(
                 ctx,
             )?;
             ctx.available_measure_pt = enclosing_measure_pt;
+            ctx.spill_page_remaining_pt = enclosing_spill_page_remaining_pt;
+            ctx.spill_page_left_to_content_right_pt = enclosing_spill_page_left_to_content_right_pt;
 
             if cell.row_span > 1 {
                 for rs in rowspan_remaining
@@ -1004,7 +1028,16 @@ fn generate_table_cell(
         && cell
             .content
             .iter()
-            .any(|block| matches!(block, Block::Paragraph(_)));
+            .any(|block| matches!(block, Block::Paragraph(_)))
+        && !cell.content.iter().any(|block| {
+            matches!(
+                block,
+                Block::Paragraph(paragraph)
+                    if paragraph.runs.iter().any(|run| {
+                        run.text.chars().any(|character| matches!(character, '\n' | '\r'))
+                    })
+            )
+        });
 
     let needs_cell_fn = clamped_colspan > 1
         || cell.row_span > 1
@@ -1375,20 +1408,219 @@ fn generate_table_cell(
             // Unknown font metrics: keep the legacy ambient-sized shape.
             None => "1.3em".to_string(),
         };
-        out.push_str("#context {let o2p-spill = [");
-        let enclosing_in_spill_cell = ctx.in_spill_cell;
-        ctx.in_spill_cell = true;
-        let spill_content = generate_cell_content(out, &cell.content, ctx);
-        ctx.in_spill_cell = enclosing_in_spill_cell;
-        spill_content?;
+        let spill_page_remaining_pt = ctx
+            .spill_page_remaining_pt
+            .map(|remaining| remaining - content_shift.map_or(0.0, |(content_dx, _)| content_dx))
+            .filter(|remaining| remaining.is_finite() && *remaining > 0.0);
+        let spill_page_left_to_content_right_pt = ctx
+            .spill_page_left_to_content_right_pt
+            .map(|distance| distance + content_shift.map_or(0.0, |(content_dx, _)| content_dx))
+            .filter(|distance| distance.is_finite() && *distance > 0.0);
+        let selectable_repair = if anchor == "left" && cell.icon_text.is_none() {
+            spill_selectable_runs(cell)
+                .zip(spill_page_remaining_pt)
+                .map(|(runs, page_remaining_pt)| {
+                    (
+                        runs,
+                        page_remaining_pt,
+                        clip_width_pt.min(page_remaining_pt),
+                    )
+                })
+        } else {
+            None
+        };
+        let right_selectable_repair = if anchor == "right" && cell.icon_text.is_none() {
+            spill_selectable_runs(cell)
+                .and_then(|runs| match runs {
+                    [run] => Some(run),
+                    _ => None,
+                })
+                .zip(spill_page_remaining_pt)
+                .zip(spill_page_left_to_content_right_pt)
+                .map(
+                    |((run, page_remaining_pt), page_left_to_content_right_pt)| {
+                        (run, page_remaining_pt, page_left_to_content_right_pt)
+                    },
+                )
+        } else {
+            None
+        };
+        let tab_selectable_repair = if anchor == "left" && cell.icon_text.is_none() {
+            spill_selectable_single_tab_parts(cell)
+                .zip(spill_page_remaining_pt)
+                .map(
+                    |((paragraph, run, before_tab, after_tab), page_remaining_pt)| {
+                        (
+                            paragraph,
+                            run,
+                            before_tab,
+                            after_tab,
+                            page_remaining_pt,
+                            // Typst emits each tab segment as its own text
+                            // item. The cell clip hides the later segment's
+                            // ink, but PDF selection still keeps that item up
+                            // to the physical page edge. Partition at that
+                            // edge so the transparent suffix does not repeat
+                            // already-selectable characters.
+                            page_remaining_pt,
+                        )
+                    },
+                )
+        } else {
+            None
+        };
+
+        out.push_str("#context {");
+        if selectable_repair.is_some() || right_selectable_repair.is_some() {
+            out.push_str("let o2p-original = [");
+            let enclosing_in_spill_cell = ctx.in_spill_cell;
+            ctx.in_spill_cell = true;
+            let spill_content = generate_cell_content(out, &cell.content, ctx);
+            ctx.in_spill_cell = enclosing_in_spill_cell;
+            spill_content?;
+            out.push_str("]; ");
+        }
+        if let Some((runs, _, visible_width_pt)) = selectable_repair {
+            if let [run] = runs {
+                let _ = write!(
+                    out,
+                    "let o2p-source = \"{}\"; let o2p-clusters = o2p-source.clusters(); let o2p-style = text.with(",
+                    escape_typst_string(&run.text),
+                );
+                write_text_params_for_text(out, &run.style, &run.text);
+                let _ = write!(
+                    out,
+                    "); let o2p-last-visible = range(0, o2p-clusters.len()).find(index => measure(o2p-style(o2p-clusters.slice(0, index + 1).join())).width >= {}pt);\
+                     let o2p-visible-text = if o2p-last-visible == none {{ o2p-source }} else {{ o2p-clusters.slice(0, o2p-last-visible + 1).join() }};\
+                     let o2p-missing = if o2p-last-visible == none {{ \"\" }} else {{ o2p-clusters.slice(o2p-last-visible + 1).join() }};\
+                     let o2p-spill = if o2p-last-visible == none {{ o2p-original }} else {{ o2p-style(o2p-visible-text) }};",
+                    format_f64(visible_width_pt),
+                );
+            } else {
+                out.push_str("let o2p-runs = (");
+                for run in runs {
+                    let _ = write!(
+                        out,
+                        "(clusters: \"{}\".clusters(), renderer: text.with(",
+                        escape_typst_string(&run.text),
+                    );
+                    write_text_params_for_text(out, &run.style, &run.text);
+                    out.push_str(")),");
+                }
+                let _ = write!(
+                    out,
+                    "); let o2p-run-width = run => measure(run.at(\"renderer\")(run.at(\"clusters\").join())).width;\
+                     let o2p-first-clipped-run = range(0, o2p-runs.len()).find(index => o2p-runs.slice(0, index + 1).fold(0pt, (width, run) => width + o2p-run-width(run)) >= {}pt);\
+                     let o2p-visible = if o2p-first-clipped-run == none {{\
+                       o2p-original\
+                     }} else {{\
+                       let run = o2p-runs.at(o2p-first-clipped-run);\
+                       let width-before = o2p-runs.slice(0, o2p-first-clipped-run).fold(0pt, (width, item) => width + o2p-run-width(item));\
+                       let last-visible = range(0, run.at(\"clusters\").len()).find(index => width-before + measure(run.at(\"renderer\")(run.at(\"clusters\").slice(0, index + 1).join())).width >= {}pt);\
+                       let earlier = o2p-runs.slice(0, o2p-first-clipped-run).fold([], (content, item) => content + item.at(\"renderer\")(item.at(\"clusters\").join()));\
+                       let current = if last-visible == none {{ [] }} else {{ run.at(\"renderer\")(run.at(\"clusters\").slice(0, last-visible + 1).join()) }};\
+                       earlier + current\
+                     }};\
+                     let o2p-missing = if o2p-first-clipped-run == none {{ \"\" }} else {{\
+                       let run = o2p-runs.at(o2p-first-clipped-run);\
+                       let width-before = o2p-runs.slice(0, o2p-first-clipped-run).fold(0pt, (width, item) => width + o2p-run-width(item));\
+                       let last-visible = range(0, run.at(\"clusters\").len()).find(index => width-before + measure(run.at(\"renderer\")(run.at(\"clusters\").slice(0, index + 1).join())).width >= {}pt);\
+                       let current = if last-visible == none {{ run.at(\"clusters\").join() }} else {{ run.at(\"clusters\").slice(last-visible + 1).join() }};\
+                       let later = o2p-runs.slice(o2p-first-clipped-run + 1).fold(\"\", (text, item) => text + item.at(\"clusters\").join());\
+                       current + later\
+                     }}; let o2p-spill = o2p-visible;",
+                    format_f64(visible_width_pt),
+                    format_f64(visible_width_pt),
+                    format_f64(visible_width_pt),
+                );
+            }
+        } else if let Some((run, _, page_left_to_content_right_pt)) = right_selectable_repair {
+            let _ = write!(
+                out,
+                "let o2p-source = \"{}\"; let o2p-clusters = o2p-source.clusters(); let o2p-style = text.with(",
+                escape_typst_string(&run.text),
+            );
+            write_text_params_for_text(out, &run.style, &run.text);
+            let _ = write!(
+                out,
+                "); let o2p-first-fully-visible = range(0, o2p-clusters.len()).find(index => measure(o2p-style(o2p-clusters.slice(index).join())).width <= {}pt);\
+                 let o2p-first-visible = if o2p-first-fully-visible == none {{ o2p-clusters.len() - 1 }} else if o2p-first-fully-visible == 0 {{ 0 }} else {{ o2p-first-fully-visible - 1 }};\
+                 let o2p-missing = o2p-clusters.slice(0, o2p-first-visible).join();\
+                 let o2p-spill = o2p-original;",
+                format_f64(page_left_to_content_right_pt),
+            );
+        } else if let Some((paragraph, run, before_tab, after_tab, _, visible_width_pt)) =
+            tab_selectable_repair
+        {
+            let default_tab_width_pt =
+                paragraph_default_tab_width_pt(&paragraph.style, ctx.default_tab_width_pt);
+            let _ = write!(
+                out,
+                "let o2p-tab-before = \"{}\"; let o2p-tab-after = \"{}\"; let o2p-tab-before-clusters = o2p-tab-before.clusters(); let o2p-tab-after-clusters = o2p-tab-after.clusters(); let o2p-tab-style = text.with(",
+                escape_typst_string(before_tab),
+                escape_typst_string(after_tab),
+            );
+            write_text_params_for_text(out, &run.style, &run.text);
+            let _ = write!(
+                out,
+                "); let o2p-tab-before-width = measure(o2p-tab-style(o2p-tab-before)).width;\
+                 let o2p-tab-remainder = calc.rem-euclid(o2p-tab-before-width.abs.pt(), {});\
+                 let o2p-tab-advance = if o2p-tab-remainder == 0 {{ {}pt }} else {{ ({} - o2p-tab-remainder) * 1pt }};\
+                 let o2p-tab-after-start = o2p-tab-before-width + o2p-tab-advance;\
+                 let o2p-tab-before-last-visible = range(0, o2p-tab-before-clusters.len()).find(index => measure(o2p-tab-style(o2p-tab-before-clusters.slice(0, index + 1).join())).width >= {}pt);\
+                 let o2p-tab-after-last-visible = range(0, o2p-tab-after-clusters.len()).find(index => o2p-tab-after-start + measure(o2p-tab-style(o2p-tab-after-clusters.slice(0, index + 1).join())).width >= {}pt);\
+                 let o2p-tab-missing = if o2p-tab-before-width >= {}pt {{ if o2p-tab-before-last-visible == none {{ o2p-tab-before + o2p-tab-after }} else {{ o2p-tab-before-clusters.slice(o2p-tab-before-last-visible).join() + o2p-tab-after }} }} else if o2p-tab-after-start >= {}pt {{ o2p-tab-after }} else if o2p-tab-after-last-visible == none {{ \"\" }} else {{ o2p-tab-after-clusters.slice(o2p-tab-after-last-visible).join() }};\
+                 let o2p-missing = o2p-tab-missing; let o2p-spill = [",
+                format_f64(default_tab_width_pt),
+                format_f64(default_tab_width_pt),
+                format_f64(default_tab_width_pt),
+                format_f64(visible_width_pt),
+                format_f64(visible_width_pt),
+                format_f64(visible_width_pt),
+                format_f64(visible_width_pt),
+            );
+            let enclosing_in_spill_cell = ctx.in_spill_cell;
+            ctx.in_spill_cell = true;
+            let spill_content = generate_cell_content(out, &cell.content, ctx);
+            ctx.in_spill_cell = enclosing_in_spill_cell;
+            spill_content?;
+            out.push_str("]; ");
+        } else {
+            out.push_str("let o2p-spill = [");
+            let enclosing_in_spill_cell = ctx.in_spill_cell;
+            ctx.in_spill_cell = true;
+            let spill_content = generate_cell_content(out, &cell.content, ctx);
+            ctx.in_spill_cell = enclosing_in_spill_cell;
+            spill_content?;
+            out.push_str("]; ");
+        }
+        // A right-aligned cell keeps its tail. Emit the transparent prefix
+        // before that visible tail so PDF readers see the source in reading
+        // order, while the shortened visual run cannot extend past the page's
+        // left edge and silently lose glyphs from selection.
+        if let Some((_, page_remaining_pt, _)) = right_selectable_repair {
+            let _ = write!(
+                out,
+                " let o2p-repair-width = calc.min({}pt, {}pt);\
+                 let o2p-repair-probe = text(size: 10pt, fill: rgb(0, 0, 0, 0), o2p-missing);\
+                 let o2p-repair-probe-width = measure(o2p-repair-probe).width;\
+                 let o2p-repair-size = 10pt * calc.min(1.0, (o2p-repair-width / 2) / calc.max(o2p-repair-probe-width, 0.01pt));\
+                 let o2p-repair = text(size: o2p-repair-size, fill: rgb(0, 0, 0, 0), o2p-missing);\
+                 let o2p-repair-natural-width = measure(o2p-repair).width;\
+                 place(left + {vertical_anchor}, box(width: o2p-repair-width, height: {height})\
+                 [#box(width: o2p-repair-natural-width)[#o2p-repair]]);",
+                format_f64(clip_width_pt),
+                format_f64(page_remaining_pt),
+            );
+        }
         // Translate the placed line itself. Wrapping this whole `#context`
         // in `#move` changes the measurement region that `place(center)`
         // resolves against and can move a wide title off the page (#1493).
         if let Some((content_dx, content_dy)) = content_shift {
             let _ = write!(
                 out,
-                "]; place({anchor} + {vertical_anchor}, dx: {}pt, dy: {}pt, box(width: {}pt, height: {height}, clip: true)\
-                 [#box(width: measure(o2p-spill).width)[#o2p-spill]])}}#box(width: 0pt, height: {height})",
+                " place({anchor} + {vertical_anchor}, dx: {}pt, dy: {}pt, box(width: {}pt, height: {height}, clip: true)\
+                 [#box(width: measure(o2p-spill).width)[#o2p-spill]])",
                 format_geometry(content_dx),
                 format_geometry(content_dy),
                 format_f64(clip_width_pt),
@@ -1396,31 +1628,270 @@ fn generate_table_cell(
         } else {
             let _ = write!(
                 out,
-                "]; place({anchor} + {vertical_anchor}, box(width: {}pt, height: {height}, clip: true)\
-                 [#box(width: measure(o2p-spill).width)[#o2p-spill]])}}#box(width: 0pt, height: {height})",
+                " place({anchor} + {vertical_anchor}, box(width: {}pt, height: {height}, clip: true)\
+                 [#box(width: measure(o2p-spill).width)[#o2p-spill]])",
                 format_f64(clip_width_pt),
             );
         }
-    } else {
-        // A `w:trHeight` floor is `max(floor, content)`, which no Typst row
-        // length expresses — a stated length pins the row, and `auto` drops
-        // the floor. A one-row grid beside a strut of the floor's height is
-        // exactly that maximum, and it costs nothing when the content already
-        // wins (issue #965).
-        let strut_height_pt: Option<f64> = row_minimum_height.map(|floor| {
-            let inset: Insets = cell.padding.unwrap_or(default_cell_padding);
-            (floor - inset.top - inset.bottom).max(0.0)
-        });
-        if let Some(height) = strut_height_pt {
+        let repair_width = selectable_repair
+            .map(|(_, page_remaining_pt, _)| page_remaining_pt)
+            .or_else(|| {
+                tab_selectable_repair.map(|(_, _, _, _, page_remaining_pt, _)| page_remaining_pt)
+            });
+        if let Some(page_remaining_pt) = repair_width {
             let _ = write!(
                 out,
-                "#grid(columns: (0pt, 1fr), rows: (auto,), box(width: 0pt, height: {}pt), [",
-                format_f64(height)
+                "; let o2p-repair-width = calc.min({}pt, {}pt);\
+                 let o2p-repair-probe = text(size: 10pt, fill: rgb(0, 0, 0, 0), o2p-missing);\
+                 let o2p-repair-probe-width = measure(o2p-repair-probe).width;\
+                 let o2p-repair-size = 10pt * calc.min(1.0, (o2p-repair-width / 2) / calc.max(o2p-repair-probe-width, 0.01pt));\
+                 let o2p-repair = text(size: o2p-repair-size, fill: rgb(0, 0, 0, 0), o2p-missing);\
+                 let o2p-repair-natural-width = measure(o2p-repair).width;\
+                 place(left + {vertical_anchor}, box(width: o2p-repair-width, height: {height})\
+                 [#box(width: o2p-repair-natural-width)[#o2p-repair]])",
+                format_f64(clip_width_pt),
+                format_f64(page_remaining_pt),
             );
         }
-        generate_cell_content(out, &cell.content, ctx)?;
-        if strut_height_pt.is_some() {
-            out.push_str("])");
+        let _ = write!(out, "}}#box(width: 0pt, height: {height})");
+    } else {
+        let page_edge_selectable_repair = (matches!(
+            cell_horizontal_alignment(cell),
+            None | Some(Alignment::Left)
+        ))
+        .then(|| spill_selectable_runs(cell))
+        .flatten()
+        .zip(ctx.spill_page_remaining_pt)
+        .filter(|(_, page_remaining_pt)| {
+            ctx.available_measure_pt
+                .is_some_and(|measure_pt| *page_remaining_pt < measure_pt)
+        });
+        let wrapped_fixed_row_selectable_repair = row_height.and_then(|track_height_pt| {
+            let inset = cell_inset_with_border(cell, default_cell_padding);
+            let content_height_pt = (track_height_pt - inset.top - inset.bottom).max(0.0);
+            let (paragraph, run, line_advance_pt, leading_pt) =
+                wrapped_fixed_row_selectable_parts(cell, ctx, effective_vertical_align)?;
+            Some((
+                paragraph,
+                run,
+                content_height_pt,
+                line_advance_pt,
+                leading_pt,
+            ))
+        });
+        let wrapped_fixed_row_widths = ctx.available_measure_pt.map(|content_width_pt| {
+            let render_width_pt = ctx
+                .spill_page_remaining_pt
+                .filter(|width| width.is_finite() && *width > 0.0)
+                .map_or(content_width_pt, |width| width.min(content_width_pt));
+            (content_width_pt, render_width_pt)
+        });
+        let rich_page_edge_wrapped_fit = row_height
+            .and_then(|_| fixed_row_wrapped_paragraph(cell, effective_vertical_align))
+            .filter(|paragraph| paragraph.runs.len() > 1)
+            .zip(wrapped_fixed_row_widths)
+            .filter(|(_, (content_width_pt, render_width_pt))| render_width_pt < content_width_pt)
+            .map(|(_, (_, render_width_pt))| render_width_pt);
+        let tight_row_selectable_repair = row_height.and_then(|track_height_pt| {
+            let inset = cell_inset_with_border(cell, default_cell_padding);
+            let content_height_pt = (track_height_pt - inset.top - inset.bottom).max(0.0);
+            let (hidden_lines, last_run, last_line) = tight_row_selectable_parts(cell)?;
+            let font_size_floor_pt = tight_row_font_size_floor_pt(cell);
+            let line_height_pt = spill_line_box_height_pt(cell, ctx)
+                .unwrap_or(font_size_floor_pt)
+                .max(font_size_floor_pt);
+            (effective_vertical_align == Some(CellVerticalAlign::Bottom)
+                && content_height_pt < 2.0 * line_height_pt)
+                .then_some((hidden_lines, last_run, last_line, content_height_pt))
+        });
+        if let Some(render_width_pt) = rich_page_edge_wrapped_fit {
+            let _ = write!(out, "#block(width: {}pt)[", format_f64(render_width_pt));
+            generate_cell_content(out, &cell.content, ctx)?;
+            out.push(']');
+        } else if let Some((
+            (paragraph, run, content_height_pt, line_advance_pt, leading_pt),
+            (content_width_pt, render_width_pt),
+        )) = wrapped_fixed_row_selectable_repair.zip(wrapped_fixed_row_widths)
+        {
+            let mut repair_style = run.style.clone();
+            repair_style.font_size = None;
+            repair_style.color = None;
+            repair_style.color_alpha = None;
+            repair_style.letter_spacing = None;
+            repair_style.baseline_shift = None;
+            let line_box = word_cell_line_box(
+                &paragraph.runs,
+                &paragraph.style,
+                ctx.line_grid_pitch,
+                ctx.row_east_asian,
+                ctx.cell_vertical_align,
+                ctx.cell_seats_text_on_descender,
+                ctx.cell_sheet_row_line.as_ref(),
+                ctx.cell_sheet_seat,
+                ctx.sheet_print_scale(),
+            )
+            .expect("wrapped fixed-row repair requires a measured line box");
+            let _ = write!(
+                out,
+                "#context {{let o2p-wrap-source = \"{}\"; let o2p-wrap-clusters = o2p-wrap-source.clusters(); let o2p-wrap-style = text.with(",
+                escape_typst_string(&run.text),
+            );
+            write_text_params_for_text(out, &run.style, &run.text);
+            out.push_str("); let o2p-wrap-repair-style = text.with(");
+            write_text_params_for_text(out, &repair_style, &run.text);
+            let _ = write!(
+                out,
+                "); let o2p-wrap-render = value => block(width: {}pt)[#set par(justify: true)\n#set text(top-edge: {}em, bottom-edge: -{}em)\n#set par(leading: {}pt)\n#o2p-wrap-style(value)]; let o2p-wrap-body = [",
+                format_f64(render_width_pt),
+                format_f64(line_box.top_em),
+                format_f64(line_box.bottom_em),
+                format_f64(leading_pt),
+            );
+            generate_cell_content(out, &cell.content, ctx)?;
+            let _ = write!(
+                out,
+                "]; let o2p-wrap-measured = measure(o2p-wrap-render(o2p-wrap-source)); let o2p-wrap-page-fit = {}; if o2p-wrap-measured.height <= {}pt {{ if o2p-wrap-page-fit {{ o2p-wrap-render(o2p-wrap-source) }} else {{ o2p-wrap-body }} }} else {{ let o2p-wrap-excess = o2p-wrap-measured.height - {}pt; let o2p-wrap-top-clip = o2p-wrap-excess / 2; let o2p-wrap-bottom-clip = o2p-wrap-excess - o2p-wrap-top-clip; let o2p-wrap-visible-start = range(0, o2p-wrap-clusters.len()).find(index => measure(o2p-wrap-render(o2p-wrap-clusters.slice(0, index + 1).join())).height > o2p-wrap-top-clip); let o2p-wrap-hidden-end = range(o2p-wrap-visible-start, o2p-wrap-clusters.len()).find(index => measure(o2p-wrap-render(o2p-wrap-clusters.slice(0, index + 1).join())).height - {}pt >= o2p-wrap-measured.height - o2p-wrap-bottom-clip); let o2p-wrap-visible-source = o2p-wrap-clusters.slice(o2p-wrap-visible-start, if o2p-wrap-hidden-end == none {{ o2p-wrap-clusters.len() }} else {{ o2p-wrap-hidden-end }}).join(); let o2p-wrap-missing-prefix = o2p-wrap-clusters.slice(0, o2p-wrap-visible-start).join(); let o2p-wrap-missing-suffix = if o2p-wrap-hidden-end == none {{ \"\" }} else {{ o2p-wrap-clusters.slice(o2p-wrap-hidden-end).join() }}; let o2p-wrap-repair = value => {{ let probe = o2p-wrap-repair-style.with(size: 10pt, fill: rgb(0, 0, 0, 0))(value); let size = 10pt * calc.min(1.0, ({}pt / 2) / calc.max(measure(probe).width, 0.01pt)); o2p-wrap-repair-style.with(size: size, fill: rgb(0, 0, 0, 0))(value) }}; place(left + top, box(width: {}pt, height: 1pt)[#o2p-wrap-repair(o2p-wrap-missing-prefix)]); block(width: {}pt, height: {}pt, clip: true)[#align(horizon)[#o2p-wrap-render(o2p-wrap-visible-source)]]; place(left + bottom, box(width: {}pt, height: 1pt)[#o2p-wrap-repair(o2p-wrap-missing-suffix)]) }} }}",
+                render_width_pt < content_width_pt,
+                format_f64(content_height_pt),
+                format_f64(content_height_pt),
+                format_f64(line_advance_pt),
+                format_f64(render_width_pt),
+                format_f64(render_width_pt),
+                format_f64(render_width_pt),
+                format_f64(content_height_pt),
+                format_f64(render_width_pt),
+            );
+        } else if let Some((
+            (hidden_lines, last_run, last_line, content_height_pt),
+            content_width_pt,
+        )) = tight_row_selectable_repair.zip(ctx.available_measure_pt)
+        {
+            let mut repair_style = last_run.style.clone();
+            repair_style.font_size = None;
+            repair_style.color = None;
+            repair_style.color_alpha = None;
+            repair_style.letter_spacing = None;
+            repair_style.baseline_shift = None;
+            let _ = write!(
+                out,
+                "#context {{let o2p-tight-hidden-lines = \"{}\"; let o2p-tight-last-line = \"{}\"; let o2p-tight-clusters = o2p-tight-last-line.clusters(); let o2p-tight-style = text.with(",
+                escape_typst_string(&hidden_lines),
+                escape_typst_string(&last_line),
+            );
+            write_text_params_for_text(out, &last_run.style, &last_line);
+            out.push_str("); let o2p-tight-repair-style = text.with(");
+            write_text_params_for_text(out, &repair_style, &hidden_lines);
+            let _ = write!(
+                out,
+                "); let o2p-tight-visible-start = range(0, o2p-tight-clusters.len()).find(index => measure(o2p-tight-style(o2p-tight-clusters.slice(index).join())).width <= {}pt);\
+                 let o2p-tight-visible = o2p-tight-style(o2p-tight-clusters.slice(o2p-tight-visible-start).join());\
+                 let o2p-tight-missing = (o2p-tight-hidden-lines + o2p-tight-clusters.slice(0, o2p-tight-visible-start).join()).replace(\"\\n\", \"\").replace(\"\\r\", \"\").replace(\"\\t\", \"\");\
+                 box(width: {}pt, height: {}pt, clip: true)[#align(left + bottom)[#o2p-tight-visible]];",
+                format_f64(content_width_pt),
+                format_f64(content_width_pt),
+                format_f64(content_height_pt),
+            );
+            let _ = write!(
+                out,
+                "let o2p-tight-probe = o2p-tight-repair-style.with(size: 10pt, fill: rgb(0, 0, 0, 0))(o2p-tight-missing);\
+                 let o2p-tight-probe-width = measure(o2p-tight-probe).width;\
+                 let o2p-tight-size = 10pt * calc.min(1.0, ({}pt / 2) / calc.max(o2p-tight-probe-width, 0.01pt));\
+                 let o2p-tight-repair = o2p-tight-repair-style.with(size: o2p-tight-size, fill: rgb(0, 0, 0, 0))(o2p-tight-missing);\
+                 place(left + bottom, box(width: {}pt, height: 1pt)[#box(width: measure(o2p-tight-repair).width)[#o2p-tight-repair]])}}",
+                format_f64(content_width_pt),
+                format_f64(content_width_pt),
+            );
+        } else {
+            if let Some((runs, page_remaining_pt)) = page_edge_selectable_repair {
+                out.push_str("#context {");
+                if let [run] = runs {
+                    let _ = write!(
+                        out,
+                        "let o2p-page-source = \"{}\"; let o2p-page-clusters = o2p-page-source.clusters(); let o2p-page-style = text.with(",
+                        escape_typst_string(&run.text),
+                    );
+                    write_text_params_for_text(out, &run.style, &run.text);
+                    let _ = write!(
+                        out,
+                        "); let o2p-page-last-visible = range(0, o2p-page-clusters.len()).find(index => measure(o2p-page-style(o2p-page-clusters.slice(0, index + 1).join())).width >= {}pt);\
+                         let o2p-page-visible = if o2p-page-last-visible == none {{ o2p-page-style(o2p-page-source) }} else {{ o2p-page-style(o2p-page-clusters.slice(0, o2p-page-last-visible + 1).join()) }};\
+                         let o2p-page-missing = if o2p-page-last-visible == none {{ \"\" }} else {{ o2p-page-clusters.slice(o2p-page-last-visible + 1).join() }}; [",
+                        format_f64(page_remaining_pt),
+                    );
+                } else {
+                    out.push_str("let o2p-page-runs = (");
+                    for run in runs {
+                        let _ = write!(
+                            out,
+                            "(clusters: \"{}\".clusters(), renderer: text.with(",
+                            escape_typst_string(&run.text),
+                        );
+                        write_text_params_for_text(out, &run.style, &run.text);
+                        out.push_str(")),");
+                    }
+                    let _ = write!(
+                        out,
+                        "); let o2p-page-run-width = run => measure(run.at(\"renderer\")(run.at(\"clusters\").join())).width;\
+                         let o2p-page-first-clipped-run = range(0, o2p-page-runs.len()).find(index => o2p-page-runs.slice(0, index + 1).fold(0pt, (width, run) => width + o2p-page-run-width(run)) >= {}pt);\
+                         let o2p-page-visible = if o2p-page-first-clipped-run == none {{\
+                           o2p-page-runs.fold([], (content, run) => content + run.at(\"renderer\")(run.at(\"clusters\").join()))\
+                         }} else {{\
+                           let run = o2p-page-runs.at(o2p-page-first-clipped-run);\
+                           let width-before = o2p-page-runs.slice(0, o2p-page-first-clipped-run).fold(0pt, (width, item) => width + o2p-page-run-width(item));\
+                           let last-visible = range(0, run.at(\"clusters\").len()).find(index => width-before + measure(run.at(\"renderer\")(run.at(\"clusters\").slice(0, index + 1).join())).width >= {}pt);\
+                           let earlier = o2p-page-runs.slice(0, o2p-page-first-clipped-run).fold([], (content, item) => content + item.at(\"renderer\")(item.at(\"clusters\").join()));\
+                           let current = if last-visible == none {{ [] }} else {{ run.at(\"renderer\")(run.at(\"clusters\").slice(0, last-visible + 1).join()) }};\
+                           earlier + current\
+                         }};\
+                         let o2p-page-missing = if o2p-page-first-clipped-run == none {{ \"\" }} else {{\
+                           let run = o2p-page-runs.at(o2p-page-first-clipped-run);\
+                           let width-before = o2p-page-runs.slice(0, o2p-page-first-clipped-run).fold(0pt, (width, item) => width + o2p-page-run-width(item));\
+                           let last-visible = range(0, run.at(\"clusters\").len()).find(index => width-before + measure(run.at(\"renderer\")(run.at(\"clusters\").slice(0, index + 1).join())).width >= {}pt);\
+                           let current = if last-visible == none {{ run.at(\"clusters\").join() }} else {{ run.at(\"clusters\").slice(last-visible + 1).join() }};\
+                           let later = o2p-page-runs.slice(o2p-page-first-clipped-run + 1).fold(\"\", (text, item) => text + item.at(\"clusters\").join()); current + later\
+                         }}; [",
+                        format_f64(page_remaining_pt),
+                        format_f64(page_remaining_pt),
+                        format_f64(page_remaining_pt),
+                    );
+                }
+            }
+            // A `w:trHeight` floor is `max(floor, content)`, which no Typst row
+            // length expresses — a stated length pins the row, and `auto` drops
+            // the floor. A one-row grid beside a strut of the floor's height is
+            // exactly that maximum, and it costs nothing when the content already
+            // wins (issue #965).
+            let strut_height_pt: Option<f64> = row_minimum_height.map(|floor| {
+                let inset: Insets = cell.padding.unwrap_or(default_cell_padding);
+                (floor - inset.top - inset.bottom).max(0.0)
+            });
+            if let Some(height) = strut_height_pt {
+                let _ = write!(
+                    out,
+                    "#grid(columns: (0pt, 1fr), rows: (auto,), box(width: 0pt, height: {}pt), [",
+                    format_f64(height)
+                );
+            }
+            if page_edge_selectable_repair.is_some() {
+                out.push_str("#o2p-page-visible");
+            } else {
+                generate_cell_content(out, &cell.content, ctx)?;
+            }
+            if strut_height_pt.is_some() {
+                out.push_str("])");
+            }
+            if let Some((_, page_remaining_pt)) = page_edge_selectable_repair {
+                let _ = write!(
+                    out,
+                    "]; let o2p-page-probe = text(size: 10pt, fill: rgb(0, 0, 0, 0), o2p-page-missing);\
+                     let o2p-page-probe-width = measure(o2p-page-probe).width;\
+                     let o2p-page-size = 10pt * calc.min(1.0, ({}pt / 2) / calc.max(o2p-page-probe-width, 0.01pt));\
+                     let o2p-page-repair = text(size: o2p-page-size, fill: rgb(0, 0, 0, 0), o2p-page-missing);\
+                     place(left + horizon, box(width: {}pt, height: 1pt)[#box(width: measure(o2p-page-repair).width)[#o2p-page-repair]])}}",
+                    format_f64(page_remaining_pt),
+                    format_f64(page_remaining_pt),
+                );
+            }
         }
     }
     if wraps_content_shift {
@@ -1498,6 +1969,178 @@ fn spill_line_box_height_pt(cell: &TableCell, ctx: &GenCtx) -> Option<f64> {
         ctx.sheet_print_scale(),
     )?;
     Some((line_box.top_em + line_box.bottom_em) * line_box.font_size_pt)
+}
+
+fn spill_selectable_runs(cell: &TableCell) -> Option<&[Run]> {
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return None;
+    };
+    let runs = paragraph.runs.as_slice();
+    if runs.is_empty() {
+        return None;
+    }
+    if runs.iter().any(|run| {
+        run.footnote.is_some()
+            || run
+                .text
+                .chars()
+                .any(|character| matches!(character, '\n' | '\r' | '\t' | '\u{000B}'))
+            || matches!(run.style.all_caps, Some(true))
+            || matches!(run.style.small_caps, Some(true))
+            || run.style.vertical_align.is_some()
+    }) || runs.iter().all(|run| run.text.is_empty())
+    {
+        return None;
+    }
+    Some(runs)
+}
+
+fn spill_selectable_single_tab_parts(cell: &TableCell) -> Option<(&Paragraph, &Run, &str, &str)> {
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return None;
+    };
+    if paragraph
+        .style
+        .tab_stops
+        .as_ref()
+        .is_some_and(|stops| !stops.is_empty())
+    {
+        return None;
+    }
+    let [run] = paragraph.runs.as_slice() else {
+        return None;
+    };
+    if run.footnote.is_some()
+        || run
+            .text
+            .chars()
+            .any(|character| matches!(character, '\n' | '\r' | '\u{000B}'))
+        || matches!(run.style.all_caps, Some(true))
+        || matches!(run.style.small_caps, Some(true))
+        || run.style.vertical_align.is_some()
+        || run.text.matches('\t').count() != 1
+    {
+        return None;
+    }
+    let (before_tab, after_tab) = run.text.split_once('\t')?;
+    Some((paragraph, run, before_tab, after_tab))
+}
+
+fn wrapped_fixed_row_selectable_parts<'a>(
+    cell: &'a TableCell,
+    ctx: &GenCtx,
+    effective_vertical_align: Option<CellVerticalAlign>,
+) -> Option<(&'a Paragraph, &'a Run, f64, f64)> {
+    let paragraph = fixed_row_wrapped_paragraph(cell, effective_vertical_align)?;
+    let [run] = spill_selectable_runs(cell)? else {
+        return None;
+    };
+    let line_box = word_cell_line_box(
+        &paragraph.runs,
+        &paragraph.style,
+        ctx.line_grid_pitch,
+        ctx.row_east_asian,
+        ctx.cell_vertical_align,
+        ctx.cell_seats_text_on_descender,
+        ctx.cell_sheet_row_line.as_ref(),
+        ctx.cell_sheet_seat,
+        ctx.sheet_print_scale(),
+    )?;
+    let line_advance_pt =
+        (line_box.top_em + line_box.bottom_em) * line_box.font_size_pt + line_box.leading_pt;
+    (line_advance_pt > 0.0).then_some((paragraph, run, line_advance_pt, line_box.leading_pt))
+}
+
+fn fixed_row_wrapped_paragraph(
+    cell: &TableCell,
+    effective_vertical_align: Option<CellVerticalAlign>,
+) -> Option<&Paragraph> {
+    if effective_vertical_align != Some(CellVerticalAlign::Center) {
+        return None;
+    }
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return None;
+    };
+    if paragraph.style.alignment != Some(Alignment::Justify)
+        || paragraph.style.indent_left.is_some()
+        || paragraph.style.indent_right.is_some()
+        || paragraph.style.indent_first_line.is_some()
+        || paragraph.style.line_spacing.is_some()
+        || paragraph.style.line_box.is_some()
+        || paragraph.style.space_before.is_some()
+        || paragraph.style.space_after.is_some()
+        || paragraph.style.direction.is_some()
+        || paragraph.style.tab_stops.is_some()
+        || paragraph.style.background.is_some()
+        || paragraph.style.border.is_some()
+    {
+        return None;
+    }
+    spill_selectable_runs(cell)?;
+    Some(paragraph)
+}
+
+fn tight_row_selectable_parts(cell: &TableCell) -> Option<(String, &Run, String)> {
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return None;
+    };
+    if !matches!(paragraph.style.alignment, None | Some(Alignment::Left)) {
+        return None;
+    }
+    let runs = paragraph.runs.as_slice();
+    if runs.is_empty()
+        || runs.iter().any(|run| {
+            run.footnote.is_some()
+                || run
+                    .text
+                    .chars()
+                    .any(|character| matches!(character, '\t' | '\u{000B}'))
+                || matches!(run.style.all_caps, Some(true))
+                || matches!(run.style.small_caps, Some(true))
+                || run.style.vertical_align.is_some()
+        })
+    {
+        return None;
+    }
+    let (break_run_index, break_byte_index) = runs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, run)| run.text.rfind('\n').map(|byte| (index, byte)))
+        .next_back()?;
+    let mut hidden_lines = String::new();
+    for run in &runs[..break_run_index] {
+        hidden_lines.push_str(&run.text);
+    }
+    hidden_lines.push_str(&runs[break_run_index].text[..=break_byte_index]);
+
+    let mut last_piece = None;
+    for (index, run) in runs.iter().enumerate().skip(break_run_index) {
+        let text = if index == break_run_index {
+            &run.text[break_byte_index + 1..]
+        } else {
+            run.text.as_str()
+        };
+        if text.is_empty() {
+            continue;
+        }
+        if last_piece.is_some() {
+            return None;
+        }
+        last_piece = Some((run, text.to_string()));
+    }
+    let (last_run, last_line) = last_piece?;
+    Some((hidden_lines, last_run, last_line))
+}
+
+fn tight_row_font_size_floor_pt(cell: &TableCell) -> f64 {
+    let [Block::Paragraph(paragraph)] = cell.content.as_slice() else {
+        return crate::defaults::TYPST_DEFAULT_FONT_SIZE_PT;
+    };
+    paragraph
+        .runs
+        .iter()
+        .filter_map(|run| run.style.font_size)
+        .fold(crate::defaults::TYPST_DEFAULT_FONT_SIZE_PT, f64::max)
 }
 
 /// The horizontal alignment a cell's own paragraph declares, if any.

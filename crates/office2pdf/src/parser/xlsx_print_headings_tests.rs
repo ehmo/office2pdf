@@ -313,6 +313,7 @@ fn test_drawings_shift_with_the_inset_grid() {
         anchor_row: 1,
         x_offset_pt: 10.0,
         y_offset_pt: 5.0,
+        clip_left_pt: None,
         clip_width_pt: None,
         image: crate::ir::ImageData {
             rotation_deg: None,
@@ -338,8 +339,12 @@ fn test_drawings_shift_with_the_inset_grid() {
         height: 20.0,
         paragraphs: Vec::new(),
         fill: None,
+        gradient_fill: None,
         border: None,
         vertical_center: false,
+        print_scale: 1.0,
+        clip_left_pt: None,
+        clip_width_pt: None,
     });
     page.charts.push(crate::ir::SheetChart {
         anchor_row: 2,
@@ -349,6 +354,8 @@ fn test_drawings_shift_with_the_inset_grid() {
             width: 200.0,
             height: 100.0,
             print_scale: 1.0,
+            clip_left_pt: None,
+            clip_width_pt: None,
         }),
         chart: crate::ir::Chart {
             chart_type: crate::ir::ChartType::Bar,
@@ -360,7 +367,9 @@ fn test_drawings_shift_with_the_inset_grid() {
             legend_position: crate::ir::LegendPosition::Right,
             has_legend: true,
             category_axis_title: None,
+            category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
             value_axis_title: None,
+            value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
             category_axis_major_tick_mark: crate::ir::AxisTickMark::Outside,
             value_axis_major_tick_mark: crate::ir::AxisTickMark::Outside,
             category_axis_deleted: false,
@@ -383,6 +392,7 @@ fn test_drawings_shift_with_the_inset_grid() {
             category_axis_text_style: crate::ir::ChartTextStyle::default(),
             value_axis_text_style: crate::ir::ChartTextStyle::default(),
             value_axis_number_format: None,
+            secondary_value_axis: None,
             auto_title_deleted: false,
             has_automatic_title: false,
             title_layout: None,

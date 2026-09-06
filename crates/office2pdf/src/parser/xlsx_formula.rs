@@ -25,6 +25,7 @@ pub(super) enum Value {
     Number(f64),
     Bool(bool),
     Text(String),
+    Error,
     /// An empty cell. Excel reads it as 0 in arithmetic and as `""` in a text
     /// comparison, which is why it is not simply `Number(0.0)`.
     Blank,
@@ -36,6 +37,7 @@ impl Value {
             Self::Number(number) => Some(*number),
             Self::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
             Self::Blank => Some(0.0),
+            Self::Error => None,
             // Excel does coerce a numeric string in arithmetic.
             Self::Text(text) => text.trim().parse::<f64>().ok(),
         }
@@ -47,6 +49,7 @@ impl Value {
             Self::Bool(flag) => *flag,
             Self::Number(number) => *number != 0.0,
             Self::Blank => false,
+            Self::Error => false,
             Self::Text(text) => text.eq_ignore_ascii_case("true"),
         }
     }
@@ -111,6 +114,246 @@ pub(super) fn evaluate(formula: &str, ctx: &EvalContext<'_>) -> Option<Value> {
     };
     let value: Value = parser.parse_comparison()?;
     parser.at_end().then_some(value)
+}
+
+/// Whether the conditional-format evaluator models every token, function,
+/// reference, and defined-name expansion in `formula`.
+///
+/// This is separate from evaluation: a supported formula can legitimately
+/// evaluate to an error for one cell, while an unknown function would return
+/// the same `None`. Preflight needs to tell those cases apart before a PDF is
+/// allowed to succeed without the rule's paint.
+#[cfg(test)]
+pub(crate) fn supports_expression(formula: &str, names: &HashMap<String, String>) -> bool {
+    supports_expression_at_depth(formula, names, None, 0)
+}
+
+pub(crate) fn supports_expression_on_sheet(
+    formula: &str,
+    names: &HashMap<String, String>,
+    sheet_name: &str,
+) -> bool {
+    supports_expression_at_depth(formula, names, Some(sheet_name), 0)
+}
+
+fn supports_expression_at_depth(
+    formula: &str,
+    names: &HashMap<String, String>,
+    sheet_name: Option<&str>,
+    depth: usize,
+) -> bool {
+    if sheet_name.is_some_and(|name| !sheet_qualifiers_match(formula, name)) {
+        return false;
+    }
+    let Some(tokens) = tokenize(formula.trim().trim_start_matches('=')) else {
+        return false;
+    };
+    let mut parser = SyntaxParser {
+        tokens: &tokens,
+        position: 0,
+        names,
+        sheet_name,
+        depth,
+    };
+    parser.parse_comparison() && parser.at_end()
+}
+
+struct SyntaxParser<'a> {
+    tokens: &'a [Token],
+    position: usize,
+    names: &'a HashMap<String, String>,
+    sheet_name: Option<&'a str>,
+    depth: usize,
+}
+
+impl SyntaxParser<'_> {
+    fn at_end(&self) -> bool {
+        self.position >= self.tokens.len()
+    }
+
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.position)
+    }
+
+    fn take_operator(&mut self, wanted: &[&str]) -> bool {
+        if matches!(
+            self.peek(),
+            Some(Token::Operator(operator)) if wanted.contains(&operator.as_str())
+        ) {
+            self.position += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn parse_comparison(&mut self) -> bool {
+        if !self.parse_sum() {
+            return false;
+        }
+        while self.take_operator(&["=", "<>", "<", "<=", ">", ">="]) {
+            if !self.parse_sum() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_sum(&mut self) -> bool {
+        if !self.parse_product() {
+            return false;
+        }
+        while self.take_operator(&["+", "-", "&"]) {
+            if !self.parse_product() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_product(&mut self) -> bool {
+        if !self.parse_unary() {
+            return false;
+        }
+        while self.take_operator(&["*", "/"]) {
+            if !self.parse_unary() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn parse_unary(&mut self) -> bool {
+        if self.take_operator(&["-", "+"]) {
+            return self.parse_unary();
+        }
+        self.parse_atom()
+    }
+
+    fn parse_atom(&mut self) -> bool {
+        match self.tokens.get(self.position).cloned() {
+            Some(Token::Number(_)) => {
+                self.position += 1;
+                true
+            }
+            Some(Token::Open) => {
+                self.position += 1;
+                self.parse_comparison() && matches!(self.peek(), Some(Token::Close)) && {
+                    self.position += 1;
+                    true
+                }
+            }
+            Some(Token::Word(word)) => {
+                self.position += 1;
+                if word.starts_with('"') {
+                    return true;
+                }
+                if matches!(self.peek(), Some(Token::Open)) {
+                    self.position += 1;
+                    let Some(argument_count) = self.parse_arguments() else {
+                        return false;
+                    };
+                    return function_arity_supported(&word, argument_count);
+                }
+                if word.eq_ignore_ascii_case("TRUE")
+                    || word.eq_ignore_ascii_case("FALSE")
+                    || parse_reference(&word).is_some()
+                {
+                    return true;
+                }
+                if self.depth >= MAX_NAME_DEPTH {
+                    return false;
+                }
+                self.names
+                    .get(&word.to_ascii_uppercase())
+                    .is_some_and(|definition| {
+                        supports_expression_at_depth(
+                            definition,
+                            self.names,
+                            self.sheet_name,
+                            self.depth + 1,
+                        )
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_arguments(&mut self) -> Option<usize> {
+        if matches!(self.peek(), Some(Token::Close)) {
+            self.position += 1;
+            return Some(0);
+        }
+        let mut count = 0;
+        loop {
+            if !self.parse_comparison() {
+                return None;
+            }
+            count += 1;
+            match self.peek() {
+                Some(Token::Comma) => self.position += 1,
+                Some(Token::Close) => {
+                    self.position += 1;
+                    return Some(count);
+                }
+                _ => return None,
+            }
+        }
+    }
+}
+
+fn sheet_qualifiers_match(formula: &str, sheet_name: &str) -> bool {
+    let bytes = formula.as_bytes();
+    let mut index = 0usize;
+    let mut in_string = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                if in_string && bytes.get(index + 1) == Some(&b'"') {
+                    index += 2;
+                    continue;
+                }
+                in_string = !in_string;
+            }
+            b'!' if !in_string => {
+                let before = formula[..index].trim_end();
+                let qualifier = if let Some(quoted) = before.strip_suffix('\'') {
+                    let Some(open) = quoted.rfind('\'') else {
+                        return false;
+                    };
+                    &quoted[open + 1..]
+                } else {
+                    let start = before
+                        .char_indices()
+                        .rev()
+                        .find(|(_, character)| {
+                            !(character.is_alphanumeric() || matches!(character, '_' | '.' | '$'))
+                        })
+                        .map_or(0, |(position, character)| position + character.len_utf8());
+                    &before[start..]
+                };
+                if qualifier.is_empty() || !qualifier.eq_ignore_ascii_case(sheet_name) {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    !in_string
+}
+
+fn function_arity_supported(name: &str, argument_count: usize) -> bool {
+    match name.to_ascii_uppercase().as_str() {
+        "COLUMN" | "ROW" => argument_count == 0,
+        "MOD" => argument_count == 2,
+        "INT" | "ABS" | "NOT" | "ISERROR" => argument_count == 1,
+        "SEARCH" => matches!(argument_count, 2 | 3),
+        "MEDIAN" | "MIN" | "MAX" | "AND" | "OR" => argument_count >= 1,
+        "SUM" => true,
+        "IF" => matches!(argument_count, 2 | 3),
+        _ => false,
+    }
 }
 
 // ── Tokens ─────────────────────────────────────────────────────────────
@@ -285,7 +528,7 @@ impl Parser<'_> {
                 left.as_number()? * divisor
             } else {
                 if divisor == 0.0 {
-                    return None; // #DIV/0!
+                    return Some(Value::Error); // #DIV/0!
                 }
                 left.as_number()? / divisor
             });
@@ -402,6 +645,7 @@ fn display(value: &Value) -> String {
         Value::Bool(flag) => if *flag { "TRUE" } else { "FALSE" }.to_string(),
         Value::Text(text) => text.clone(),
         Value::Blank => String::new(),
+        Value::Error => "#VALUE!".to_string(),
     }
 }
 
@@ -424,7 +668,13 @@ fn compare(left: &Value, right: &Value, operator: &str) -> Option<bool> {
 
 fn call(name: &str, arguments: &[Value], ctx: &EvalContext<'_>) -> Option<Value> {
     let numbers = || -> Option<Vec<f64>> { arguments.iter().map(Value::as_number).collect() };
-    match name.to_ascii_uppercase().as_str() {
+    let name = name.to_ascii_uppercase();
+    if !matches!(name.as_str(), "ISERROR" | "IF")
+        && arguments.iter().any(|value| matches!(value, Value::Error))
+    {
+        return Some(Value::Error);
+    }
+    match name.as_str() {
         "COLUMN" => Some(Value::Number(f64::from(ctx.cell.0))),
         "ROW" => Some(Value::Number(f64::from(ctx.cell.1))),
         "MOD" => {
@@ -460,6 +710,8 @@ fn call(name: &str, arguments: &[Value], ctx: &EvalContext<'_>) -> Option<Value>
         "AND" => Some(Value::Bool(arguments.iter().all(Value::is_truthy))),
         "OR" => Some(Value::Bool(arguments.iter().any(Value::is_truthy))),
         "NOT" => Some(Value::Bool(!arguments.first()?.is_truthy())),
+        "ISERROR" => Some(Value::Bool(matches!(arguments.first()?, Value::Error))),
+        "SEARCH" => search(arguments),
         "IF" => {
             let condition: bool = arguments.first()?.is_truthy();
             let branch: Option<&Value> = if condition {
@@ -470,6 +722,80 @@ fn call(name: &str, arguments: &[Value], ctx: &EvalContext<'_>) -> Option<Value>
             Some(branch.cloned().unwrap_or(Value::Bool(condition)))
         }
         _ => None,
+    }
+}
+
+fn search(arguments: &[Value]) -> Option<Value> {
+    let ([needle, haystack] | [needle, haystack, _]) = arguments else {
+        return None;
+    };
+    let start = match arguments.get(2) {
+        Some(value) => match value.as_number() {
+            Some(number) => number,
+            None => return Some(Value::Error),
+        },
+        None => 1.0,
+    };
+    if start < 1.0 || start.fract() != 0.0 {
+        return Some(Value::Error);
+    }
+
+    let needle: Vec<char> = display(needle).to_lowercase().chars().collect();
+    let haystack: Vec<char> = display(haystack).to_lowercase().chars().collect();
+    let start = start as usize - 1;
+    if start > haystack.len() {
+        return Some(Value::Error);
+    }
+    for offset in start..=haystack.len() {
+        if wildcard_prefix_matches(&needle, &haystack[offset..]) {
+            return Some(Value::Number((offset + 1) as f64));
+        }
+    }
+    Some(Value::Error)
+}
+
+fn wildcard_prefix_matches(pattern: &[char], text: &[char]) -> bool {
+    let mut pattern_at = 0usize;
+    let mut text_at = 0usize;
+    let mut star_after = None;
+    let mut star_text_at = 0usize;
+
+    loop {
+        if pattern_at == pattern.len() {
+            return true;
+        }
+        if pattern[pattern_at] == '*' {
+            pattern_at += 1;
+            star_after = Some(pattern_at);
+            star_text_at = text_at;
+            continue;
+        }
+
+        let (matches, width) = if pattern[pattern_at] == '~'
+            && pattern_at + 1 < pattern.len()
+            && matches!(pattern[pattern_at + 1], '~' | '*' | '?')
+        {
+            (text.get(text_at) == pattern.get(pattern_at + 1), 2)
+        } else if pattern[pattern_at] == '?' {
+            (text.get(text_at).is_some(), 1)
+        } else {
+            (text.get(text_at) == pattern.get(pattern_at), 1)
+        };
+
+        if matches {
+            pattern_at += width;
+            text_at += 1;
+            continue;
+        }
+        let Some(after) = star_after else {
+            return false;
+        };
+        star_text_at += 1;
+        if star_text_at > text.len() {
+            return false;
+        }
+        pattern_at = after;
+        text_at = star_text_at;
     }
 }
 

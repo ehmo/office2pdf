@@ -179,6 +179,18 @@ fn test_unsupported_encryption_debug() {
 }
 
 #[test]
+fn test_unsupported_element_error_display() {
+    let error = ConvertError::UnsupportedElement {
+        format: "XLSX",
+        element: "vertical drawing overflow with auto-height rows".to_string(),
+    };
+    assert_eq!(
+        error.to_string(),
+        "unsupported XLSX element: vertical drawing overflow with auto-height rows"
+    );
+}
+
+#[test]
 fn test_all_variants_carry_format() {
     let variants = [
         ConvertWarning::UnsupportedElement {

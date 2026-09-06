@@ -435,6 +435,18 @@ fn test_legend_pos_bottom_is_read() {
 }
 
 #[test]
+fn test_explicit_legend_leaf_elements_are_read() {
+    let xml = bar_chart_with_legend(
+        r#"<c:legend><c:legendPos val="b"></c:legendPos><c:delete val="1"></c:delete></c:legend>"#,
+    );
+
+    let chart = parse_chart_xml(&xml, &SchemeColors::empty()).unwrap();
+
+    assert_eq!(chart.legend_position, LegendPosition::Bottom);
+    assert!(!chart.has_legend);
+}
+
+#[test]
 fn test_every_legend_pos_value_is_mapped() {
     for (val, expected) in [
         ("b", LegendPosition::Bottom),
@@ -608,6 +620,7 @@ fn test_a_series_marker_symbol_is_read() {
     let chart = parse_chart_xml(&xml, &SchemeColors::empty()).unwrap();
 
     assert_eq!(chart.series[0].marker_symbol, Some(MarkerSymbol::Circle));
+    assert_eq!(chart.series[0].marker_size_pt, Some(5.0));
 }
 
 #[test]
@@ -1026,6 +1039,14 @@ fn test_axis_titles_are_read() {
 
     assert_eq!(chart.category_axis_title.as_deref(), Some("계층"));
     assert_eq!(chart.value_axis_title.as_deref(), Some("LOC"));
+    assert_eq!(
+        chart.category_axis_title_text_style.rotation_degrees,
+        Some(0.0)
+    );
+    assert_eq!(
+        chart.value_axis_title_text_style.rotation_degrees,
+        Some(-90.0)
+    );
 }
 
 #[test]
@@ -1540,6 +1561,7 @@ fn a_chart_space_fill_does_not_take_the_lines_colour() {
         ChartAreaOutline::Explicit {
             width_pt: Some(9360.0 / 12700.0),
             color: Some(Color::new(0xd9, 0xd9, 0xd9)),
+            round_join: false,
         }
     );
 }
@@ -1589,7 +1611,11 @@ fn a_chart_space_line_keeps_its_width_and_colour() {
     ), &SchemeColors::empty())
     .expect("chart parses");
     match chart.chart_area_outline {
-        ChartAreaOutline::Explicit { width_pt, color } => {
+        ChartAreaOutline::Explicit {
+            width_pt,
+            color,
+            round_join,
+        } => {
             let width = width_pt.expect("a declared width reaches the model");
             assert!(
                 (width - 9360.0 / 12700.0).abs() < 1e-9,
@@ -1597,6 +1623,7 @@ fn a_chart_space_line_keeps_its_width_and_colour() {
                 9360.0 / 12700.0
             );
             assert_eq!(color, Some(Color::new(0xd9, 0xd9, 0xd9)));
+            assert!(!round_join);
         }
         other => panic!("expected an explicit outline, got {other:?}"),
     }
@@ -1721,6 +1748,32 @@ fn chart_text_character_spacing_is_read_in_hundredths_of_a_point() {
 }
 
 #[test]
+fn chart_text_kerning_threshold_is_read_in_points() {
+    let chart = parse_chart_xml(
+        &chart_space_with(r#"<c:txPr><a:p><a:pPr><a:defRPr kern="1200"/></a:pPr></a:p></c:txPr>"#),
+        &SchemeColors::empty(),
+    )
+    .expect("chart parses");
+    assert_eq!(
+        chart.text_style.pair_kerning,
+        Some(crate::ir::PairKerning::AtOrAbovePt(12.0))
+    );
+}
+
+#[test]
+fn chart_text_zero_kerning_threshold_means_never() {
+    let chart = parse_chart_xml(
+        &chart_space_with(r#"<c:txPr><a:p><a:pPr><a:defRPr kern="0"/></a:pPr></a:p></c:txPr>"#),
+        &SchemeColors::empty(),
+    )
+    .expect("chart parses");
+    assert_eq!(
+        chart.text_style.pair_kerning,
+        Some(crate::ir::PairKerning::Never)
+    );
+}
+
+#[test]
 fn a_chart_space_tx_pr_bold_reaches_the_model() {
     let chart = parse_chart_xml(
         &chart_space_with(
@@ -1776,6 +1829,131 @@ fn an_axis_tx_pr_overrides_the_chart_space_one() {
 }
 
 #[test]
+fn axis_titles_keep_their_own_run_properties() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+                      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+            <c:chart><c:plotArea>
+                <c:barChart><c:barDir val="col"/></c:barChart>
+                <c:catAx><c:title><c:tx><c:rich><a:p><a:r><a:t>Quarter</a:t></a:r></a:p></c:rich></c:tx>
+                    <c:txPr><a:p><a:pPr><a:defRPr sz="800" b="0">
+                        <a:solidFill><a:srgbClr val="123456"/></a:solidFill>
+                        <a:latin typeface="Arial"/>
+                    </a:defRPr></a:pPr></a:p></c:txPr>
+                </c:title></c:catAx>
+                <c:valAx><c:title><c:tx><c:rich><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></c:rich></c:tx>
+                    <c:txPr><a:p><a:pPr><a:defRPr sz="1100" b="1"><a:latin typeface="Aptos"/></a:defRPr></a:pPr></a:p></c:txPr>
+                </c:title></c:valAx>
+            </c:plotArea></c:chart>
+        </c:chartSpace>"#;
+    let chart = parse_chart_xml(xml, &SchemeColors::empty()).expect("chart parses");
+
+    assert_eq!(chart.category_axis_title.as_deref(), Some("Quarter"));
+    assert_eq!(chart.category_axis_title_text_style.size_pt, Some(8.0));
+    assert_eq!(
+        chart.category_axis_title_text_style.font_family.as_deref(),
+        Some("Arial")
+    );
+    assert_eq!(chart.category_axis_title_text_style.bold, Some(false));
+    assert_eq!(
+        chart.category_axis_title_text_style.color,
+        Some(Color::new(0x12, 0x34, 0x56))
+    );
+    assert_eq!(chart.value_axis_title.as_deref(), Some("Revenue"));
+    assert_eq!(chart.value_axis_title_text_style.size_pt, Some(11.0));
+    assert_eq!(
+        chart.value_axis_title_text_style.font_family.as_deref(),
+        Some("Aptos")
+    );
+    assert_eq!(chart.value_axis_title_text_style.bold, Some(true));
+}
+
+#[test]
+fn package_theme_resolves_every_chart_text_scope() {
+    let mut chart =
+        parse_chart_xml(&chart_space_with(""), &SchemeColors::empty()).expect("chart parses");
+    chart.text_font_family = Some("+mn-lt".to_string());
+    chart.text_style.font_family = Some("+mn-lt".to_string());
+    chart.title_text_style.font_family = Some("+mj-lt".to_string());
+    chart.legend_text_style.font_family = Some("+mn-lt".to_string());
+    chart.category_axis_text_style.font_family = Some("Arial".to_string());
+    chart.value_axis_text_style.font_family = Some("+mj-lt".to_string());
+    chart.category_axis_title_text_style.font_family = Some("+mn-lt".to_string());
+    chart.value_axis_title_text_style.font_family = Some("+mj-lt".to_string());
+    chart.series[0].data_labels.text_style.font_family = Some("+mn-lt".to_string());
+    let theme = crate::parser::drawingml::ThemeFontScheme {
+        major_latin: Some("Aptos Display".to_string()),
+        minor_latin: Some("Aptos".to_string()),
+    };
+
+    resolve_chart_text_fonts(&mut chart, &theme);
+
+    assert_eq!(chart.text_font_family.as_deref(), Some("Aptos"));
+    assert_eq!(chart.text_style.font_family.as_deref(), Some("Aptos"));
+    assert_eq!(
+        chart.title_text_style.font_family.as_deref(),
+        Some("Aptos Display")
+    );
+    assert_eq!(
+        chart.legend_text_style.font_family.as_deref(),
+        Some("Aptos")
+    );
+    assert_eq!(
+        chart.category_axis_text_style.font_family.as_deref(),
+        Some("Arial")
+    );
+    assert_eq!(
+        chart.value_axis_text_style.font_family.as_deref(),
+        Some("Aptos Display")
+    );
+    assert_eq!(
+        chart.category_axis_title_text_style.font_family.as_deref(),
+        Some("Aptos")
+    );
+    assert_eq!(
+        chart.value_axis_title_text_style.font_family.as_deref(),
+        Some("Aptos Display")
+    );
+    assert_eq!(
+        chart.series[0]
+            .data_labels
+            .text_style
+            .font_family
+            .as_deref(),
+        Some("Aptos")
+    );
+}
+
+#[test]
+fn rich_axis_title_run_properties_reach_the_model() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+                      xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+            <c:chart><c:plotArea>
+                <c:barChart><c:barDir val="col"/></c:barChart>
+                <c:catAx><c:title><c:tx><c:rich><a:bodyPr/><a:p><a:pPr>
+                    <a:defRPr sz="900" b="1"><a:latin typeface="Calibri"/></a:defRPr>
+                </a:pPr><a:r><a:rPr sz="800" b="0">
+                    <a:solidFill><a:srgbClr val="123456"/></a:solidFill>
+                    <a:latin typeface="Arial"/>
+                </a:rPr><a:t>Quarter</a:t></a:r></a:p></c:rich></c:tx></c:title></c:catAx>
+            </c:plotArea></c:chart>
+        </c:chartSpace>"#;
+    let chart = parse_chart_xml(xml, &SchemeColors::empty()).expect("chart parses");
+
+    assert_eq!(chart.category_axis_title_text_style.size_pt, Some(8.0));
+    assert_eq!(chart.category_axis_title_text_style.bold, Some(false));
+    assert_eq!(
+        chart.category_axis_title_text_style.font_family.as_deref(),
+        Some("Arial")
+    );
+    assert_eq!(
+        chart.category_axis_title_text_style.color,
+        Some(Color::new(0x12, 0x34, 0x56))
+    );
+}
+
+#[test]
 fn a_legend_tx_pr_keeps_its_own_run_properties() {
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
@@ -1802,7 +1980,7 @@ fn a_legend_tx_pr_keeps_its_own_run_properties() {
         Some(Color::new(0xC0, 0x2A, 0x7A))
     );
     assert_eq!(
-        chart.text_style.resolved_size_pt(chart.legend_text_style),
+        chart.text_style.resolved_size_pt(&chart.legend_text_style),
         Some(17.0),
         "the legend overrides the chart-space 12pt size"
     );
@@ -1863,7 +2041,7 @@ fn an_axis_declaring_no_tx_pr_inherits_the_chart_space_one() {
     assert_eq!(
         chart
             .text_style
-            .resolved_size_pt(chart.category_axis_text_style),
+            .resolved_size_pt(&chart.category_axis_text_style),
         Some(18.0)
     );
 }
@@ -2149,6 +2327,16 @@ fn test_auto_title_deleted_is_read() {
     assert!(chart.auto_title_deleted);
 }
 
+#[test]
+fn test_explicit_auto_title_deleted_leaf_is_read() {
+    let chart = parse_chart_xml(
+        &single_series_chart_xml(r#"<c:autoTitleDeleted val="1"></c:autoTitleDeleted>"#),
+        &SchemeColors::empty(),
+    )
+    .expect("chart parses");
+    assert!(chart.auto_title_deleted);
+}
+
 /// A chart that says nothing keeps the automatic title, so the flag is read
 /// rather than assumed.
 #[test]
@@ -2414,6 +2602,7 @@ fn a_text_slot_line_colour_resolves_against_the_theme() {
         ChartAreaOutline::Explicit {
             width_pt: Some(0.75),
             color: Some(lifted),
+            round_join: true,
         },
         "the chart frame"
     );
@@ -2798,6 +2987,20 @@ fn a_leading_line_chart_still_leaves_the_bar_family_governing() {
     assert_eq!(chart.series[1].plot_type, None);
 }
 
+#[test]
+fn a_column_line_combo_binds_its_line_to_the_right_value_axis() {
+    let xml = r#"<c:chartSpace xmlns:c="urn:c" xmlns:a="urn:a"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>12</c:v></c:pt><c:pt idx="1"><c:v>19</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="1"/><c:axId val="2"/></c:barChart><c:lineChart><c:ser><c:val><c:numLit><c:pt idx="0"><c:v>1500</c:v></c:pt><c:pt idx="1"><c:v>2900</c:v></c:pt></c:numLit></c:val></c:ser><c:axId val="3"/><c:axId val="4"/></c:lineChart><c:catAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:axPos val="l"/><c:crossAx val="1"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Value</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx><c:valAx><c:axId val="4"/><c:axPos val="r"/><c:crossAx val="3"/><c:majorUnit val="500"/><c:title><c:tx><c:rich><a:p><a:r><a:t>Target</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx><c:catAx><c:axId val="3"/><c:axPos val="b"/><c:crossAx val="4"/></c:catAx></c:plotArea></c:chart></c:chartSpace>"#;
+
+    let chart = parse_chart_xml(xml, &SchemeColors::empty()).unwrap();
+    assert_eq!(chart.value_axis_title.as_deref(), Some("Value"));
+    let secondary = chart
+        .secondary_value_axis
+        .expect("the reciprocal right pair is retained");
+    assert_eq!(secondary.series_indices, vec![1]);
+    assert_eq!(secondary.title.as_deref(), Some("Target"));
+    assert_eq!(secondary.major_unit, Some(500.0));
+}
+
 /// A single-family chart names no per-series family: every series is the
 /// chart's own kind, which is what `None` says.
 #[test]
@@ -2921,6 +3124,25 @@ fn a_scatter_only_plot_area_still_reads_as_a_scatter_chart() {
 
     assert_eq!(chart.chart_type, ChartType::Scatter);
     assert!(chart.series.iter().all(|series| series.plot_type.is_none()));
+}
+
+#[test]
+fn a_scatter_only_plot_assigns_its_bottom_and_left_numeric_axes_by_edge() {
+    let family = r#"<c:scatterChart><c:scatterStyle val="lineMarker"/><c:ser><c:idx val="0"/><c:order val="0"/><c:xVal><c:numLit><c:pt idx="0"><c:v>15</c:v></c:pt><c:pt idx="1"><c:v>29</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:pt idx="0"><c:v>12</c:v></c:pt><c:pt idx="1"><c:v>31</c:v></c:pt></c:numLit></c:yVal></c:ser></c:scatterChart>"#;
+    let bottom = r#"<c:valAx><c:axPos val="b"/><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Quarter</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx>"#;
+    let left = r#"<c:valAx><c:axPos val="l"/><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Value</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx>"#;
+
+    for axes in [format!("{bottom}{left}"), format!("{left}{bottom}")] {
+        let xml = format!(
+            r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea>{family}{axes}</c:plotArea></c:chart></c:chartSpace>"#
+        );
+        let chart = parse_chart_xml(&xml, &SchemeColors::empty()).unwrap();
+
+        assert_eq!(chart.chart_type, ChartType::Scatter);
+        assert_eq!(chart.categories, vec!["15", "29"]);
+        assert_eq!(chart.category_axis_title.as_deref(), Some("Quarter"));
+        assert_eq!(chart.value_axis_title.as_deref(), Some("Value"));
+    }
 }
 
 /// The bar family still outranks a scatter that follows it, as it does every

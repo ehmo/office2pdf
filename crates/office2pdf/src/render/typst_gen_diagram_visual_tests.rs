@@ -27,13 +27,16 @@ fn test_codegen_chart_bar_visual_bars() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -56,6 +59,7 @@ fn test_codegen_chart_bar_visual_bars() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -109,13 +113,16 @@ fn test_codegen_chart_axis_ticks_and_no_raw_floats() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -138,6 +145,7 @@ fn test_codegen_chart_axis_ticks_and_no_raw_floats() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -179,13 +187,16 @@ fn test_codegen_chart_pie_draws_a_pie() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -208,6 +219,7 @@ fn test_codegen_chart_pie_draws_a_pie() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -254,13 +266,16 @@ fn test_codegen_chart_line_trend_indicators() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -283,6 +298,7 @@ fn test_codegen_chart_line_trend_indicators() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -322,7 +338,9 @@ fn test_codegen_chart_empty_series() {
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -345,6 +363,7 @@ fn test_codegen_chart_empty_series() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -415,13 +434,16 @@ fn an_axis_chart_that_does_not_fit_moves_to_the_next_page_whole() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -444,6 +466,7 @@ fn an_axis_chart_that_does_not_fit_moves_to_the_next_page_whole() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -483,13 +506,16 @@ fn a_bordered_chart_box_that_does_not_fit_moves_to_the_next_page_whole() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -512,6 +538,7 @@ fn a_bordered_chart_box_that_does_not_fit_moves_to_the_next_page_whole() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -695,6 +722,7 @@ fn test_codegen_chart_line_plot() {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -706,6 +734,7 @@ fn test_codegen_chart_line_plot() {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -713,7 +742,9 @@ fn test_codegen_chart_line_plot() {
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -736,6 +767,7 @@ fn test_codegen_chart_line_plot() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -780,13 +812,16 @@ fn a_chart_too_tall_for_a_page_still_breaks_rather_than_overflowing() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -809,6 +844,7 @@ fn a_chart_too_tall_for_a_page_still_breaks_rather_than_overflowing() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -853,6 +889,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -864,6 +901,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -875,6 +913,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -886,6 +925,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -893,7 +933,9 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -919,6 +961,7 @@ fn stacked_support_chart(grouping: ChartGrouping) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1049,6 +1092,7 @@ fn legend_chart(position: LegendPosition) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -1060,6 +1104,7 @@ fn legend_chart(position: LegendPosition) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -1067,7 +1112,9 @@ fn legend_chart(position: LegendPosition) -> Chart {
         legend_position: position,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1090,6 +1137,7 @@ fn legend_chart(position: LegendPosition) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1164,10 +1212,13 @@ fn a_right_legend_still_stacks_its_entries() {
 #[test]
 fn every_legend_family_uses_the_legends_own_run_properties() {
     let style = crate::ir::ChartTextStyle {
+        font_family: None,
         size_pt: Some(17.0),
         bold: Some(true),
         letter_spacing_hundredths: Some(125),
+        pair_kerning: None,
         color: Some(Color::new(0xC0, 0x2A, 0x7A)),
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     for (chart_type, label) in [
@@ -1181,7 +1232,7 @@ fn every_legend_family_uses_the_legends_own_run_properties() {
     ] {
         let mut chart = legend_chart(LegendPosition::Bottom);
         chart.chart_type = chart_type.clone();
-        chart.legend_text_style = style;
+        chart.legend_text_style = style.clone();
         let source = framed_chart_source(&chart, 480.0, 320.0);
         let entry = source
             .lines()
@@ -1275,13 +1326,16 @@ fn a_declared_series_fill_reaches_the_bars() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1304,6 +1358,7 @@ fn a_declared_series_fill_reaches_the_bars() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1341,13 +1396,16 @@ fn a_series_without_a_fill_still_takes_the_palette() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1370,6 +1428,7 @@ fn a_series_without_a_fill_still_takes_the_palette() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1405,13 +1464,16 @@ fn per_point_fills_colour_each_bar_separately() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1434,6 +1496,7 @@ fn per_point_fills_colour_each_bar_separately() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1468,13 +1531,16 @@ fn axis_titled_chart(category: Option<&str>, value: Option<&str>) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: category.map(str::to_string),
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: value.map(str::to_string),
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1497,6 +1563,7 @@ fn axis_titled_chart(category: Option<&str>, value: Option<&str>) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1516,6 +1583,94 @@ fn axis_titles_are_drawn() {
     assert!(
         source.contains("rotate(-90deg"),
         "the value axis title runs down the left edge: {source}"
+    );
+}
+
+#[test]
+fn a_bottom_legend_clears_an_inherited_size_category_axis_title() {
+    let mut chart = axis_titled_chart(Some("Quarter"), Some("Revenue"));
+    chart.host = crate::ir::ChartHost::Spreadsheet;
+    chart.legend_position = LegendPosition::Bottom;
+    chart.series[0].name = Some("Legend entry".to_string());
+
+    let source = chart_source(chart);
+    let title = source
+        .lines()
+        .find(|line| line.contains("[Quarter]"))
+        .expect("the category title is emitted");
+    let legend = source
+        .lines()
+        .find(|line| line.contains("[Legend entry]"))
+        .expect("the legend entry is emitted");
+    let title_y = leading_pt(title.split_once("dy: ").unwrap().1).unwrap();
+    let title_h = leading_pt(title.split_once("height: ").unwrap().1).unwrap();
+    let legend_y = leading_pt(legend.split_once("dy: ").unwrap().1).unwrap();
+
+    assert!(
+        legend_y >= title_y + title_h,
+        "the legend at {legend_y} must clear the title ending at {}; got:\n{source}",
+        title_y + title_h
+    );
+}
+
+#[test]
+fn axis_titles_use_their_own_run_properties() {
+    let mut chart = axis_titled_chart(Some("Quarter"), Some("Revenue"));
+    chart.category_axis_title_text_style = crate::ir::ChartTextStyle {
+        font_family: Some("Arial".to_string()),
+        size_pt: Some(8.0),
+        bold: Some(false),
+        color: Some(Color::new(0x12, 0x34, 0x56)),
+        ..Default::default()
+    };
+    chart.value_axis_title_text_style = crate::ir::ChartTextStyle {
+        font_family: Some("Aptos".to_string()),
+        size_pt: Some(11.0),
+        bold: Some(true),
+        color: Some(Color::new(0x65, 0x43, 0x21)),
+        ..Default::default()
+    };
+
+    let source = chart_source(chart);
+
+    let quarter = source
+        .lines()
+        .find(|line| line.contains("[Quarter]"))
+        .expect("the category title is emitted");
+    let revenue = source
+        .lines()
+        .find(|line| line.contains("[Revenue]"))
+        .expect("the value title is emitted");
+    assert!(quarter.contains("size: 8pt") && quarter.contains("fill: rgb(18, 52, 86)"));
+    assert!(!quarter.contains("weight: \"bold\""));
+    assert!(revenue.contains("size: 11pt") && revenue.contains("fill: rgb(101, 67, 33)"));
+    assert!(revenue.contains("weight: \"bold\""));
+    assert!(quarter.contains("font:") && quarter.contains("Arial"));
+    assert!(revenue.contains("font:") && revenue.contains("Aptos"));
+}
+
+#[test]
+fn horizontal_bars_put_the_category_title_on_the_left() {
+    let mut chart = axis_titled_chart(Some("Quarter"), Some("Revenue"));
+    chart.chart_type = ChartType::Bar;
+
+    let source = chart_source(chart);
+    let quarter = source
+        .lines()
+        .find(|line| line.contains("[Quarter]"))
+        .expect("the category title is emitted");
+    let revenue = source
+        .lines()
+        .find(|line| line.contains("[Revenue]"))
+        .expect("the value title is emitted");
+
+    assert!(
+        quarter.contains("rotate(-90deg"),
+        "the physical vertical-axis title must run down the left edge: {quarter}"
+    );
+    assert!(
+        !revenue.contains("rotate("),
+        "the physical horizontal-axis title must stay flat: {revenue}"
     );
 }
 
@@ -1581,13 +1736,16 @@ fn labelled_chart(labels: DataLabels) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Stacked,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1610,6 +1768,7 @@ fn labelled_chart(labels: DataLabels) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1689,13 +1848,16 @@ fn pie_chart(values: Vec<f64>) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1718,6 +1880,7 @@ fn pie_chart(values: Vec<f64>) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -1896,13 +2059,16 @@ fn test_chart_default_gridline_matches_powerpoint() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -1925,6 +2091,7 @@ fn test_chart_default_gridline_matches_powerpoint() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -2065,13 +2232,16 @@ fn tick_mark_chart(
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark,
         value_axis_major_tick_mark,
         category_axis_deleted: false,
@@ -2094,6 +2264,7 @@ fn tick_mark_chart(
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -2679,6 +2850,7 @@ fn band_layout_chart(
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             })
             .collect(),
@@ -2686,7 +2858,9 @@ fn band_layout_chart(
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -2709,6 +2883,7 @@ fn band_layout_chart(
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -2964,6 +3139,7 @@ fn two_series_bar_chart(theme_accent_colors: Vec<crate::ir::Color>) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -2975,6 +3151,7 @@ fn two_series_bar_chart(theme_accent_colors: Vec<crate::ir::Color>) -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -2982,7 +3159,9 @@ fn two_series_bar_chart(theme_accent_colors: Vec<crate::ir::Color>) -> Chart {
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -3005,6 +3184,7 @@ fn two_series_bar_chart(theme_accent_colors: Vec<crate::ir::Color>) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -3101,6 +3281,167 @@ fn line_chart_with_markers(symbols: [Option<MarkerSymbol>; 2]) -> Chart {
     chart
 }
 
+fn stacked_area_chart() -> Chart {
+    let mut chart =
+        line_chart_with_markers([Some(MarkerSymbol::Circle), Some(MarkerSymbol::Diamond)]);
+    chart.chart_type = ChartType::Area;
+    chart.grouping = ChartGrouping::Stacked;
+    chart.series[0].values = vec![4.0, 8.0, 6.0];
+    chart.series[1].values = vec![6.0, 2.0, 5.0];
+    chart
+}
+
+fn numeric_scatter_chart() -> Chart {
+    let mut chart = line_chart_with_markers([Some(MarkerSymbol::Diamond), None]);
+    chart.chart_type = ChartType::Scatter;
+    chart.categories = [15.0, 17.0, 20.0, 24.0, 29.0]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect();
+    chart.series.truncate(1);
+    chart.series[0].values = vec![12.0, 19.0, 14.0, 27.0, 31.0];
+    chart.series[0].data_labels.show_value = true;
+    chart.category_axis_title = Some("Quarter".to_string());
+    chart.value_axis_title = Some("Value".to_string());
+    chart
+}
+
+#[test]
+fn a_numeric_scatter_uses_x_values_for_nonuniform_point_spacing() {
+    let source = chart_source(numeric_scatter_chart());
+    assert!(
+        !source.contains("Scatter Chart"),
+        "a drawable scatter must not fall back to a data table: {source}"
+    );
+
+    let points = emitted_path_points(&source);
+    assert_eq!(
+        points.len(),
+        5,
+        "the five cached points must draw: {source}"
+    );
+    let gaps: Vec<f64> = points
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .collect();
+    assert!(
+        gaps.windows(2).all(|pair| pair[0] < pair[1]),
+        "x gaps 2, 3, 4, 5 must widen instead of using category bands: {gaps:?}"
+    );
+}
+
+#[test]
+fn a_numeric_scatter_draws_its_value_labels_and_both_axis_titles() {
+    let source = chart_source(numeric_scatter_chart());
+
+    for text in ["Quarter", "Value", "12", "19", "14", "27", "31"] {
+        assert!(
+            source.contains(&format!("[{text}]")),
+            "missing {text}: {source}"
+        );
+    }
+}
+
+#[test]
+fn a_stacked_area_chart_draws_one_closed_filled_region_per_series() {
+    let source = chart_source(stacked_area_chart());
+    let regions: Vec<&str> = source
+        .lines()
+        .filter(|line| line.contains("path(fill:"))
+        .collect();
+
+    assert_eq!(
+        regions.len(),
+        2,
+        "each stacked series must be an area, not an ordinary polyline: {source}"
+    );
+    assert!(
+        regions
+            .iter()
+            .all(|line| line.contains("closed: true") && line.contains("stroke:")),
+        "each area must close, fill, and retain its top-edge stroke: {regions:#?}"
+    );
+}
+
+#[test]
+fn stacked_area_boundaries_accumulate_each_series_on_the_prior_one() {
+    let chart = stacked_area_chart();
+    let boundaries = crate::render::typst_gen::diagrams::stacked_series_boundaries(&chart);
+
+    assert_eq!(boundaries[0].0, vec![0.0, 0.0, 0.0]);
+    assert_eq!(boundaries[0].1, vec![4.0, 8.0, 6.0]);
+    assert_eq!(boundaries[1].0, vec![4.0, 8.0, 6.0]);
+    assert_eq!(boundaries[1].1, vec![10.0, 10.0, 11.0]);
+}
+
+#[test]
+fn negative_stacked_values_accumulate_below_zero_independently() {
+    let mut chart = stacked_area_chart();
+    chart.series[0].values = vec![4.0, -3.0, -2.0];
+    chart.series[1].values = vec![-6.0, -2.0, 5.0];
+
+    let boundaries = crate::render::typst_gen::diagrams::stacked_series_boundaries(&chart);
+
+    assert_eq!(boundaries[0], (vec![0.0, 0.0, 0.0], vec![4.0, -3.0, -2.0]));
+    assert_eq!(boundaries[1].0, vec![0.0, -3.0, 0.0]);
+    assert_eq!(boundaries[1].1, vec![-6.0, -5.0, 5.0]);
+}
+
+#[test]
+fn percent_stacks_normalize_positive_and_negative_sides_separately() {
+    let mut chart = stacked_area_chart();
+    chart.grouping = ChartGrouping::PercentStacked;
+    chart.series[0].values = vec![1.0, -3.0, 3.0];
+    chart.series[1].values = vec![3.0, -1.0, 1.0];
+
+    let boundaries = crate::render::typst_gen::diagrams::stacked_series_boundaries(&chart);
+
+    assert_eq!(boundaries[0].1, vec![25.0, -75.0, 75.0]);
+    assert_eq!(boundaries[1].0, vec![25.0, -75.0, 75.0]);
+    assert_eq!(boundaries[1].1, vec![100.0, -100.0, 100.0]);
+}
+
+#[test]
+fn a_mixed_sign_percent_stacked_area_draws_the_full_negative_and_positive_scale() {
+    let mut chart = stacked_area_chart();
+    chart.grouping = ChartGrouping::PercentStacked;
+    chart.series[0].values = vec![1.0, -3.0, 3.0];
+    chart.series[1].values = vec![3.0, -1.0, 1.0];
+
+    let ticks = emitted_axis_ticks(&chart_source(chart));
+    assert_eq!(
+        ticks.first(),
+        Some(&-100.0),
+        "negative stacks need the -100 tick: {ticks:?}"
+    );
+    assert_eq!(
+        ticks.last(),
+        Some(&100.0),
+        "positive stacks need the 100 tick: {ticks:?}"
+    );
+}
+
+#[test]
+fn an_area_chart_ticks_each_mid_category_point_instead_of_band_boundaries() {
+    let source = chart_source(stacked_area_chart());
+    let lines = emitted_lines(&source);
+    let plot = plot_rect(&lines);
+    let (under, _) = tick_marks_by_edge(&lines, plot);
+
+    assert_eq!(
+        under.len(),
+        3,
+        "midCat puts one tick at each of the three points, including both plot edges: {under:#?}\n{source}"
+    );
+    assert!(
+        under.iter().any(|line| same_length(line.dx, plot.0))
+            && under
+                .iter()
+                .any(|line| same_length(line.dx, plot.0 + plot.2)),
+        "the first and last area points must reach the plot edges: {under:#?}\n{source}"
+    );
+}
+
 /// How many markers of each shape the source draws, as
 /// `(circles, polygons, squares)`. A line chart draws nothing else as any of
 /// them, so every hit is a marker — in the plot or on a legend key.
@@ -3147,6 +3488,24 @@ fn a_declared_marker_symbol_outranks_the_shape_cycle() {
     assert_eq!(
         squares, 0,
         "no series may fall back to the cycle's square; got:\n{source}"
+    );
+}
+
+#[test]
+fn a_declared_marker_size_controls_plot_and_legend_markers() {
+    let mut chart = line_chart_with_markers([Some(MarkerSymbol::Circle), Some(MarkerSymbol::Off)]);
+    chart.series[0].marker_size_pt = Some(6.0);
+
+    let source = chart_source(chart);
+
+    assert_eq!(
+        source.matches("circle(radius: 3pt").count(),
+        4,
+        "the three plotted markers and the legend marker must use the declared 6pt diameter; got:\n{source}"
+    );
+    assert!(
+        !source.contains("circle(radius: 2.5pt"),
+        "the declared size must replace the 5pt default; got:\n{source}"
     );
 }
 
@@ -3531,6 +3890,7 @@ fn a_chart_outline_keeps_its_own_width_and_colour() {
     chart.chart_area_outline = ChartAreaOutline::Explicit {
         width_pt: Some(0.7370079),
         color: Some(crate::ir::Color::new(0xd9, 0xd9, 0xd9)),
+        round_join: false,
     };
     let source = chart_source(chart);
 
@@ -3640,10 +4000,13 @@ fn sized_bar_chart(size_pt: f64) -> Chart {
     chart.series[1].values = vec![2.0, 6.0];
     chart.title = Some("Sales".to_string());
     chart.text_style = crate::ir::ChartTextStyle {
+        font_family: None,
         size_pt: Some(size_pt),
         bold: None,
         letter_spacing_hundredths: None,
+        pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     chart
@@ -3696,10 +4059,13 @@ fn title_run_style(
     color: Option<crate::ir::Color>,
 ) -> crate::ir::ChartTextStyle {
     crate::ir::ChartTextStyle {
+        font_family: None,
         size_pt,
         bold,
         letter_spacing_hundredths: None,
+        pair_kerning: None,
         color,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     }
 }
@@ -3709,6 +4075,22 @@ fn own_title_style_chart(title_style: crate::ir::ChartTextStyle) -> Chart {
     let mut chart = sized_bar_chart(18.0);
     chart.title_text_style = title_style;
     chart
+}
+
+#[test]
+fn a_chart_title_uses_its_own_font() {
+    let mut style = title_run_style(Some(14.0), Some(false), None);
+    style.font_family = Some("Arial".to_string());
+    let source = chart_source(own_title_style_chart(style));
+    let title = source
+        .lines()
+        .find(|line| line.contains("[Sales]"))
+        .expect("the title is emitted");
+
+    assert!(
+        title.contains("font:") && title.contains("Arial"),
+        "{source}"
+    );
 }
 
 /// A size the title states itself is the printed size, not something to scale.
@@ -3919,10 +4301,13 @@ fn category_labels_take_the_axis_weight() {
     // rendered regular while the data labels beside them kept their own bold.
     let mut chart = sized_bar_chart(11.0);
     chart.category_axis_text_style = crate::ir::ChartTextStyle {
+        font_family: None,
         size_pt: None,
         bold: Some(true),
         letter_spacing_hundredths: None,
+        pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     let source: String = chart_source(chart);
@@ -3936,10 +4321,13 @@ fn category_labels_take_the_axis_weight() {
 fn an_axis_size_overrides_the_chart_space_size_for_that_axis_only() {
     let mut chart = sized_bar_chart(18.0);
     chart.category_axis_text_style = crate::ir::ChartTextStyle {
+        font_family: None,
         size_pt: Some(9.0),
         bold: None,
         letter_spacing_hundredths: None,
+        pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     let source: String = chart_source(chart);
@@ -4044,10 +4432,13 @@ fn bar_chart_at(size_pt: Option<f64>, categories: &[&str]) -> Chart {
     chart.series[0].values = vec![4.0; categories.len()];
     chart.series[1].values = vec![2.0; categories.len()];
     chart.text_style = crate::ir::ChartTextStyle {
+        font_family: None,
         size_pt,
         bold: None,
         letter_spacing_hundredths: None,
+        pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     chart
@@ -4417,6 +4808,8 @@ fn anchored_excel_gift_chart_source(chart: Chart, chart_space_frame_top: f64) ->
                 width: EXCEL_GIFT_CHART_FRAME.0,
                 height: EXCEL_GIFT_CHART_FRAME.1,
                 print_scale: EXCEL_GIFT_PRINT_SCALE,
+                clip_left_pt: None,
+                clip_width_pt: None,
             }),
             chart,
         }],
@@ -4473,13 +4866,21 @@ fn an_anchored_excel_worksheet_chart_snaps_interior_gridlines_in_sheet_space() {
     chart.value_axis_major_unit = Some(20.0);
     let source: String = anchored_excel_gift_chart_source(chart, EXCEL_GIFT_CHART_SPACE_FRAME_TOP);
 
-    let page_frame_top = leading_pt(
-        source
-            .split_once("#place(top + left, dy: ")
-            .expect("the sheet places its drawing layer chart")
-            .1,
+    let drawing_place_prefix = "#place(top + left, dy: ";
+    let mut drawing_places = source.split(drawing_place_prefix).skip(1);
+    let clip_top = leading_pt(
+        drawing_places
+            .next()
+            .expect("the sheet pins its printable-height clipping window"),
     )
-    .expect("the chart page offset is a point measurement");
+    .expect("the clipping window page offset is a point measurement");
+    let drawing_offset = leading_pt(
+        drawing_places
+            .next()
+            .expect("the sheet places its chart inside the clipping window"),
+    )
+    .expect("the chart sheet offset is a point measurement");
+    let page_frame_top = clip_top + drawing_offset;
     let chart_space_frame_top = page_frame_top / EXCEL_GIFT_PRINT_SCALE;
     assert!(
         (chart_space_frame_top - EXCEL_GIFT_CHART_SPACE_FRAME_TOP).abs() <= 0.001,
@@ -4945,6 +5346,7 @@ fn every_plot_family_draws_a_titled_chart_inside_its_full_area_outline() {
     let outline = ChartAreaOutline::Explicit {
         width_pt: Some(2.0),
         color: Some(crate::ir::Color::new(0xd9, 0xd9, 0xd9)),
+        round_join: false,
     };
     let area_start =
         "#box(width: 321pt, height: 240pt, fill: none, stroke: 2pt + rgb(217, 217, 217))[";
@@ -5117,6 +5519,7 @@ fn an_explicit_outline_survives_on_every_host() {
         chart.chart_area_outline = ChartAreaOutline::Explicit {
             width_pt: Some(2.0),
             color: Some(crate::ir::Color::new(0xd9, 0xd9, 0xd9)),
+            round_join: false,
         };
         let source: String = chart_source(chart);
         assert!(
@@ -5367,13 +5770,16 @@ fn test_data_table_prints_a_series_number_format() {
             number_format: Some("0.0%".to_string()),
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -5396,6 +5802,7 @@ fn test_data_table_prints_a_series_number_format() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -5432,13 +5839,16 @@ fn test_data_table_prints_a_declared_thousands_format() {
             number_format: Some("#,##0".to_string()),
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -5461,6 +5871,7 @@ fn test_data_table_prints_a_declared_thousands_format() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -5495,13 +5906,16 @@ fn test_data_table_without_a_number_format_prints_plainly() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -5524,6 +5938,7 @@ fn test_data_table_without_a_number_format_prints_plainly() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -5557,13 +5972,16 @@ fn test_a_currency_axis_label_is_escaped() {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -5586,6 +6004,7 @@ fn test_a_currency_axis_label_is_escaped() {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: Some("\"$\"#,##0".to_string()),
+        secondary_value_axis: None,
         auto_title_deleted: false,
         has_automatic_title: false,
         title_layout: None,
@@ -5621,13 +6040,16 @@ fn single_series_chart(auto_title_deleted: bool) -> Chart {
             number_format: None,
             plot_type: None,
             marker_symbol: None,
+            marker_size_pt: None,
             line_width_pt: None,
         }],
         grouping: ChartGrouping::Clustered,
         legend_position: LegendPosition::Right,
         has_legend: false,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::Outside,
         value_axis_major_tick_mark: AxisTickMark::Outside,
         category_axis_deleted: false,
@@ -5650,6 +6072,7 @@ fn single_series_chart(auto_title_deleted: bool) -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted,
         has_automatic_title: false,
         title_layout: None,
@@ -5706,6 +6129,7 @@ fn automatic_title_chart(series_names: &[Option<&str>], auto_title_deleted: bool
                 number_format: None,
                 plot_type: None,
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             })
             .collect(),
@@ -5713,7 +6137,9 @@ fn automatic_title_chart(series_names: &[Option<&str>], auto_title_deleted: bool
         legend_position: LegendPosition::Bottom,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::None,
         value_axis_major_tick_mark: AxisTickMark::None,
         category_axis_deleted: false,
@@ -5736,6 +6162,7 @@ fn automatic_title_chart(series_names: &[Option<&str>], auto_title_deleted: bool
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted,
         has_automatic_title: true,
         title_layout: None,
@@ -6182,9 +6609,17 @@ fn crowded_category_labels_keep_declared_character_spacing_without_moving_the_pl
 
     let tracked_plot = axis_plot_rect(&chart, (401.95, 344.25), false);
     let source = chart_source(chart);
+    let tracked_label = source
+        .lines()
+        .find(|line| line.contains("[Fortjenestemargin]"))
+        .expect("the first tracked category label must be emitted");
     assert!(
-        source.contains(", tracking: 1pt, ligatures: false, kerning: false)[Fortjenestemargin]"),
-        "axis text must emit the declared spacing: {source}"
+        tracked_label.contains("tracking: 1pt"),
+        "axis text must emit the declared spacing: {tracked_label}"
+    );
+    assert!(
+        tracked_label.contains("ligatures: false") && tracked_label.contains("kerning: false"),
+        "tracked axis text must disable ligatures and kerning: {tracked_label}"
     );
     let mut plain = crowded_column_chart();
     plain.text_style.size_pt = Some(11.97);
@@ -6193,6 +6628,39 @@ fn crowded_category_labels_keep_declared_character_spacing_without_moving_the_pl
     assert_eq!(
         tracked_plot, plain_plot,
         "tracking changes glyph advance, not the native-calibrated chart plot"
+    );
+}
+
+#[test]
+fn chart_text_disables_kerning_only_below_the_declared_size_threshold() {
+    let mut chart = crowded_column_chart();
+    chart.text_style.pair_kerning = Some(crate::ir::PairKerning::AtOrAbovePt(12.0));
+    chart.category_axis_text_style.size_pt = Some(9.0);
+
+    let below = chart_source(chart.clone());
+    assert!(
+        below.contains("size: 9pt, kerning: false)[Fortjenestemargin]"),
+        "9pt axis text must disable kerning below a 12pt threshold: {below}"
+    );
+
+    chart.category_axis_text_style.size_pt = Some(12.0);
+    let at_threshold = chart_source(chart);
+    assert!(
+        at_threshold.contains("size: 12pt, kerning: true)[Fortjenestemargin]"),
+        "text at the threshold must explicitly enable kerning: {at_threshold}"
+    );
+}
+
+#[test]
+fn chart_title_keeps_declared_character_spacing() {
+    let mut chart = crowded_column_chart();
+    chart.title = Some("Tracked title".to_string());
+    chart.title_text_style.letter_spacing_hundredths = Some(125);
+
+    let source = chart_source(chart);
+    assert!(
+        source.contains("tracking: 1.25pt, ligatures: false, kerning: false)[Tracked title]"),
+        "the chart title must emit its own character spacing: {source}"
     );
 }
 
@@ -6380,6 +6848,33 @@ fn a_data_label_is_set_at_the_size_its_dlbls_declare() {
     assert!(source.contains("height: 14.9625pt"), "{source}");
 }
 
+#[test]
+fn a_data_label_uses_its_own_font_weight_and_colour() {
+    let chart = labelled_chart(DataLabels {
+        show_value: true,
+        text_style: crate::ir::ChartTextStyle {
+            font_family: Some("Arial".to_string()),
+            size_pt: Some(11.0),
+            bold: Some(false),
+            color: Some(crate::ir::Color::new(0x12, 0x34, 0x56)),
+            ..Default::default()
+        },
+        ..DataLabels::default()
+    });
+    let source = chart_source(chart);
+    let label = source
+        .lines()
+        .find(|line| line.contains("#text(size: 11pt") && line.contains("[4]"))
+        .expect("the data label is emitted");
+
+    assert!(!label.contains("weight: \"bold\""), "{label}");
+    assert!(label.contains("fill: rgb(18, 52, 86)"), "{label}");
+    assert!(
+        label.contains("font:") && label.contains("Arial"),
+        "{label}"
+    );
+}
+
 /// A `<c:dLbls>` stating no size takes the chart space's, and only a chart
 /// stating nothing anywhere keeps the unmeasured 8pt the labels were pinned
 /// at — reading a declared size must not resize charts that declare none.
@@ -6421,6 +6916,7 @@ fn combo_budget_chart() -> Chart {
         number_format: None,
         plot_type: None,
         marker_symbol: None,
+        marker_size_pt: None,
         line_width_pt: None,
     };
     Chart {
@@ -6440,6 +6936,7 @@ fn combo_budget_chart() -> Chart {
                 number_format: None,
                 plot_type: Some(ChartType::Line),
                 marker_symbol: None,
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -6447,7 +6944,9 @@ fn combo_budget_chart() -> Chart {
         legend_position: LegendPosition::Bottom,
         has_legend: true,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::None,
         value_axis_major_tick_mark: AxisTickMark::None,
         category_axis_deleted: false,
@@ -6473,6 +6972,7 @@ fn combo_budget_chart() -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: true,
         has_automatic_title: false,
         title_layout: None,
@@ -6549,6 +7049,52 @@ fn a_line_series_reads_against_the_same_axis_as_the_columns() {
     assert!(
         (june_point_x - band_centre).abs() < 0.5,
         "the point sits at its category's centre {band_centre}, got {june_point_x}"
+    );
+}
+
+#[test]
+fn a_line_series_on_the_right_axis_uses_its_own_scale_and_keeps_its_title() {
+    let mut chart = combo_budget_chart();
+    chart.series[2].values = vec![1500.0, 2900.0];
+    chart.secondary_value_axis = Some(crate::ir::ChartSecondaryValueAxis {
+        series_indices: vec![2],
+        title: Some("Target".to_string()),
+        title_text_style: crate::ir::ChartTextStyle::default(),
+        text_style: crate::ir::ChartTextStyle::default(),
+        number_format: None,
+        major_tick_mark: AxisTickMark::Outside,
+        line: crate::ir::ChartLine::Automatic,
+        major_unit: Some(500.0),
+        min: None,
+        max: None,
+        deleted: false,
+    });
+
+    let source = chart_source(chart);
+    let points = emitted_path_points(&source);
+    assert_eq!(points.len(), 2, "the line keeps one point per category");
+    let (_, plot_y, _, plot_h) = plot_rect(&emitted_lines(&source));
+    let plot_bottom = plot_y + plot_h;
+    assert!(
+        points
+            .iter()
+            .all(|(_, y)| (plot_y..=plot_bottom).contains(y)),
+        "right-scale values must stay inside the plot {plot_y}..{plot_bottom}: {points:?}"
+    );
+    let right_max = emitted_axis_ticks(&source)
+        .into_iter()
+        .fold(0.0_f64, f64::max);
+    assert!(right_max > 2900.0, "the right axis must clear its data");
+    for ((_, y), value) in points.iter().zip([1500.0, 2900.0]) {
+        let expected_y = plot_bottom - value / right_max * plot_h;
+        assert!(
+            (*y - expected_y).abs() < 0.01,
+            "{value} must use the right-axis maximum {right_max}: {points:?}"
+        );
+    }
+    assert!(
+        source.contains("[Target]"),
+        "the right-axis title must survive into the chart source:\n{source}"
     );
 }
 
@@ -6633,6 +7179,7 @@ fn combo_line_and_scatter_chart() -> Chart {
                 number_format: None,
                 plot_type: None,
                 marker_symbol: Some(MarkerSymbol::Off),
+                marker_size_pt: None,
                 line_width_pt: None,
             },
             ChartSeries {
@@ -6644,6 +7191,7 @@ fn combo_line_and_scatter_chart() -> Chart {
                 number_format: None,
                 plot_type: Some(ChartType::Scatter),
                 marker_symbol: Some(MarkerSymbol::Circle),
+                marker_size_pt: None,
                 line_width_pt: None,
             },
         ],
@@ -6651,7 +7199,9 @@ fn combo_line_and_scatter_chart() -> Chart {
         legend_position: LegendPosition::Bottom,
         has_legend: false,
         category_axis_title: None,
+        category_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_title: None,
+        value_axis_title_text_style: crate::ir::ChartTextStyle::default(),
         category_axis_major_tick_mark: AxisTickMark::None,
         value_axis_major_tick_mark: AxisTickMark::None,
         category_axis_deleted: false,
@@ -6674,6 +7224,7 @@ fn combo_line_and_scatter_chart() -> Chart {
         category_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_text_style: crate::ir::ChartTextStyle::default(),
         value_axis_number_format: None,
+        secondary_value_axis: None,
         auto_title_deleted: true,
         has_automatic_title: false,
         title_layout: None,

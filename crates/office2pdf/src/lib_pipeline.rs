@@ -9,6 +9,23 @@ use crate::error::{ConvertError, ConvertMetrics, ConvertResult, ConvertWarning};
 use crate::parser::Parser;
 use crate::{ir, parser, render};
 
+/// Largest standard-renderer document proved to compile without overflowing
+/// Typst's stack in the tested native and browser builds. Native XLSX streaming
+/// compiles planned sheet-page chunks separately and bypasses this guard.
+/// Browser builds need a bounded chunk-and-merge path to exceed it.
+const STANDARD_RENDER_PAGE_LIMIT: usize = 1_600;
+
+pub(super) fn ensure_standard_page_count(page_count: usize) -> Result<(), ConvertError> {
+    if page_count > STANDARD_RENDER_PAGE_LIMIT {
+        return Err(ConvertError::ResourceLimit {
+            resource: "document pages",
+            limit: STANDARD_RENDER_PAGE_LIMIT,
+            actual: page_count,
+        });
+    }
+    Ok(())
+}
+
 fn format_label(format: Format) -> &'static str {
     match format {
         Format::Docx => "DOCX",
@@ -233,6 +250,7 @@ pub(super) fn convert_bytes(
         }
     };
     let parse_duration = parse_start.elapsed();
+    ensure_standard_page_count(doc.pages.len())?;
     extend_document_fonts(&mut additional_fonts, &doc);
 
     #[cfg(target_arch = "wasm32")]
@@ -357,7 +375,9 @@ pub(super) fn convert_bytes(
 
 #[cfg(feature = "pdf-ops")]
 struct PlannedStreamingChunk {
-    document: ir::Document,
+    page_index: usize,
+    body_range: std::ops::Range<usize>,
+    is_first_chunk: bool,
     page_count: u32,
 }
 
@@ -517,8 +537,24 @@ fn streaming_chunk_document(source: &ir::Document, page: ir::SheetPage) -> ir::D
 }
 
 #[cfg(feature = "pdf-ops")]
+fn streaming_chunk_page_count(
+    source: &ir::Document,
+    page: &ir::SheetPage,
+    body_range: std::ops::Range<usize>,
+    is_first_chunk: bool,
+    probe_context: &mut StreamingProbeContext<'_>,
+) -> Result<u32, ConvertError> {
+    let document = streaming_chunk_document(
+        source,
+        streaming_sheet_chunk(page, body_range, is_first_chunk),
+    );
+    probe_context.page_count(&document)
+}
+
+#[cfg(feature = "pdf-ops")]
 fn plan_streaming_sheet_chunks(
     source: &ir::Document,
+    page_index: usize,
     page: &ir::SheetPage,
     chunk_size: usize,
     probe_context: &mut StreamingProbeContext<'_>,
@@ -526,10 +562,11 @@ fn plan_streaming_sheet_chunks(
     let (_, _, _, body_start) = sheet_row_sections(&page.table);
     let body_row_count: usize = page.table.rows.len().saturating_sub(body_start);
     if body_row_count == 0 {
-        let document = streaming_chunk_document(source, page.clone());
-        let page_count = probe_context.page_count(&document)?;
+        let page_count = streaming_chunk_page_count(source, page, 0..0, true, probe_context)?;
         return Ok(vec![PlannedStreamingChunk {
-            document,
+            page_index,
+            body_range: 0..0,
+            is_first_chunk: true,
             page_count,
         }]);
     }
@@ -547,19 +584,23 @@ fn plan_streaming_sheet_chunks(
             requested_end,
             probe_context.options,
         ) {
-            let aligned_document = streaming_chunk_document(
+            let aligned_pages = streaming_chunk_page_count(
                 source,
-                streaming_sheet_chunk(page, chunk_start..aligned_end, is_first_chunk),
-            );
-            let aligned_pages = probe_context.page_count(&aligned_document)?;
+                page,
+                chunk_start..aligned_end,
+                is_first_chunk,
+                probe_context,
+            )?;
             let boundary_is_confirmed = if aligned_end == body_row_count {
                 true
             } else {
-                let next_document = streaming_chunk_document(
+                streaming_chunk_page_count(
                     source,
-                    streaming_sheet_chunk(page, chunk_start..aligned_end + 1, is_first_chunk),
-                );
-                probe_context.page_count(&next_document)? > aligned_pages
+                    page,
+                    chunk_start..aligned_end + 1,
+                    is_first_chunk,
+                    probe_context,
+                )? > aligned_pages
             };
             if boundary_is_confirmed {
                 tracing::debug!(
@@ -570,7 +611,9 @@ fn plan_streaming_sheet_chunks(
                     "aligned fixed-row streaming chunk to a PDF page boundary"
                 );
                 chunks.push(PlannedStreamingChunk {
-                    document: aligned_document,
+                    page_index,
+                    body_range: chunk_start..aligned_end,
+                    is_first_chunk,
                     page_count: aligned_pages,
                 });
                 chunk_start = aligned_end;
@@ -578,15 +621,19 @@ fn plan_streaming_sheet_chunks(
             }
         }
 
-        let requested_document = streaming_chunk_document(
+        let requested_pages = streaming_chunk_page_count(
             source,
-            streaming_sheet_chunk(page, chunk_start..requested_end, is_first_chunk),
-        );
-        let requested_pages = probe_context.page_count(&requested_document)?;
+            page,
+            chunk_start..requested_end,
+            is_first_chunk,
+            probe_context,
+        )?;
 
         if requested_end == body_row_count {
             chunks.push(PlannedStreamingChunk {
-                document: requested_document,
+                page_index,
+                body_range: chunk_start..requested_end,
+                is_first_chunk,
                 page_count: requested_pages,
             });
             break;
@@ -597,11 +644,13 @@ fn plan_streaming_sheet_chunks(
         let mut step: usize = 1;
         loop {
             let probe_end: usize = requested_end.saturating_add(step).min(body_row_count);
-            let probe_document = streaming_chunk_document(
+            let probe_pages = streaming_chunk_page_count(
                 source,
-                streaming_sheet_chunk(page, chunk_start..probe_end, is_first_chunk),
-            );
-            let probe_pages = probe_context.page_count(&probe_document)?;
+                page,
+                chunk_start..probe_end,
+                is_first_chunk,
+                probe_context,
+            )?;
             if probe_pages > requested_pages {
                 first_larger_end = Some(probe_end);
                 break;
@@ -609,7 +658,9 @@ fn plan_streaming_sheet_chunks(
             last_same_end = probe_end;
             if probe_end == body_row_count {
                 chunks.push(PlannedStreamingChunk {
-                    document: probe_document,
+                    page_index,
+                    body_range: chunk_start..probe_end,
+                    is_first_chunk,
                     page_count: probe_pages,
                 });
                 chunk_start = body_row_count;
@@ -626,11 +677,13 @@ fn plan_streaming_sheet_chunks(
             first_larger_end.expect("the page-growth search must find an upper bound");
         while lower_end < upper_end {
             let middle_end: usize = lower_end + (upper_end - lower_end) / 2;
-            let middle_document = streaming_chunk_document(
+            let middle_pages = streaming_chunk_page_count(
                 source,
-                streaming_sheet_chunk(page, chunk_start..middle_end, is_first_chunk),
-            );
-            let middle_pages = probe_context.page_count(&middle_document)?;
+                page,
+                chunk_start..middle_end,
+                is_first_chunk,
+                probe_context,
+            )?;
             if middle_pages > requested_pages {
                 upper_end = middle_end;
             } else {
@@ -639,14 +692,6 @@ fn plan_streaming_sheet_chunks(
         }
 
         let aligned_end: usize = lower_end - 1;
-        let aligned_document = if aligned_end == requested_end {
-            requested_document
-        } else {
-            streaming_chunk_document(
-                source,
-                streaming_sheet_chunk(page, chunk_start..aligned_end, is_first_chunk),
-            )
-        };
         tracing::debug!(
             sheet = page.name,
             requested_rows = chunk_size,
@@ -655,7 +700,9 @@ fn plan_streaming_sheet_chunks(
             "aligned streaming chunk to a PDF page boundary"
         );
         chunks.push(PlannedStreamingChunk {
-            document: aligned_document,
+            page_index,
+            body_range: chunk_start..aligned_end,
+            is_first_chunk,
             page_count: requested_pages,
         });
         chunk_start = aligned_end;
@@ -717,7 +764,7 @@ fn convert_bytes_streaming_xlsx(
         compile_duration: std::time::Duration::ZERO,
     };
     let mut planned_chunks: Vec<PlannedStreamingChunk> = Vec::new();
-    for page in &document.pages {
+    for (page_index, page) in document.pages.iter().enumerate() {
         let ir::Page::Sheet(sheet_page) = page else {
             return Err(ConvertError::Render(
                 "XLSX streaming received a non-sheet IR page".to_string(),
@@ -725,6 +772,7 @@ fn convert_bytes_streaming_xlsx(
         };
         planned_chunks.extend(plan_streaming_sheet_chunks(
             &document,
+            page_index,
             sheet_page,
             chunk_size,
             &mut probe_context,
@@ -771,10 +819,23 @@ fn convert_bytes_streaming_xlsx(
     let mut all_pdfs: Vec<Vec<u8>> = Vec::with_capacity(planned_chunks.len());
     let mut total_page_count: u32 = 0;
     for planned_chunk in planned_chunks {
+        let ir::Page::Sheet(sheet_page) = &document.pages[planned_chunk.page_index] else {
+            return Err(ConvertError::Render(
+                "XLSX streaming received a non-sheet IR page".to_string(),
+            ));
+        };
+        let chunk_document = streaming_chunk_document(
+            &document,
+            streaming_sheet_chunk(
+                sheet_page,
+                planned_chunk.body_range,
+                planned_chunk.is_first_chunk,
+            ),
+        );
         if let Some(font_context) = font_context.as_ref() {
             warnings.extend(
                 render::font_subst::detect_missing_font_fallbacks_with_context(
-                    &planned_chunk.document,
+                    &chunk_document,
                     font_context,
                 )
                 .into_iter()
@@ -788,7 +849,7 @@ fn convert_bytes_streaming_xlsx(
 
         let codegen_start: Instant = Instant::now();
         let output = render::typst_gen::generate_typst_with_options_and_font_context(
-            &planned_chunk.document,
+            &chunk_document,
             options,
             font_context.as_ref(),
         )?;
@@ -847,6 +908,7 @@ fn convert_bytes_streaming_xlsx(
 }
 
 pub(super) fn render_document(doc: &ir::Document) -> Result<Vec<u8>, ConvertError> {
+    ensure_standard_page_count(doc.pages.len())?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let options = ConvertOptions::default();
@@ -1029,6 +1091,14 @@ mod streaming_chunk_tests {
         assert_eq!(
             fixed_row_page_aligned_end(&page, 0, 0, 1, &ConvertOptions::default()),
             None
+        );
+    }
+
+    #[test]
+    fn streaming_plan_does_not_retain_ir_documents() {
+        assert!(
+            std::mem::size_of::<PlannedStreamingChunk>() <= 5 * std::mem::size_of::<usize>(),
+            "a streaming plan must retain only compact row coordinates and page counts"
         );
     }
 }

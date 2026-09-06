@@ -192,6 +192,23 @@ struct GenCtx {
     cell_sheet_seat: Option<SheetCellSeat>,
     /// Whether emission is inside a spill cell's clipped wrapper (issue #811).
     in_spill_cell: bool,
+    /// Horizontal distance from the printed sheet table's left edge to the
+    /// physical page edge. A spill cell can paint clipped text past the print
+    /// margin, but Typst drops glyphs whose origins pass the page itself.
+    /// `None` outside a top-level sheet table.
+    sheet_page_right_from_table_left_pt: Option<f64>,
+    /// Horizontal distance from the physical page's left edge to the printed
+    /// sheet table's left edge. A right-aligned spill uses it to identify the
+    /// prefix whose glyph origins fall off the page.
+    /// `None` outside a top-level sheet table.
+    sheet_page_left_from_table_left_pt: Option<f64>,
+    /// Horizontal distance from the current sheet cell's text origin to the
+    /// physical page edge. Set only while generating that top-level cell.
+    spill_page_remaining_pt: Option<f64>,
+    /// Horizontal distance from the physical page's left edge to the current
+    /// sheet cell's right text edge. Set only while generating that top-level
+    /// cell.
+    spill_page_left_to_content_right_pt: Option<f64>,
     /// Numerals the active section's `PAGE` fields render in. A header is
     /// generated as part of its page's setup, so the section's `w:pgNumType
     /// w:fmt` reaches the field through the context rather than through the
@@ -274,6 +291,10 @@ impl GenCtx {
             cell_sheet_row_line: None,
             cell_sheet_seat: None,
             in_spill_cell: false,
+            sheet_page_right_from_table_left_pt: None,
+            sheet_page_left_from_table_left_pt: None,
+            spill_page_remaining_pt: None,
+            spill_page_left_to_content_right_pt: None,
             page_number_format: PageNumberFormat::default(),
             document_default_text: None,
             document_default_tab_stop_pt: None,
@@ -944,6 +965,12 @@ fn generate_table_page(
     // The page margins themselves stay put: the header and footer keep their
     // own alignment, which the centering does not touch.
     let centering_inset_pt: Option<f64> = horizontal_centering_inset_pt(page, &size);
+    let enclosing_sheet_page_right: Option<f64> = ctx.sheet_page_right_from_table_left_pt;
+    let enclosing_sheet_page_left: Option<f64> = ctx.sheet_page_left_from_table_left_pt;
+    ctx.sheet_page_right_from_table_left_pt =
+        Some(size.width - page.margins.left - centering_inset_pt.unwrap_or(0.0));
+    ctx.sheet_page_left_from_table_left_pt =
+        Some(page.margins.left + centering_inset_pt.unwrap_or(0.0));
 
     // Every glyph Excel prints on a sheet — the grid's cells and the text of
     // the drawings floating over it alike — advances on a whole-point grid in
@@ -955,7 +982,7 @@ fn generate_table_page(
     // below, have had the print scale folded into their sizes by the parser
     // and need that factor to recover the same coordinate system (#1238).
     let drawings: Option<SheetDrawingLayer> = with_sheet_advance_grid(Some(1.0), || {
-        sheet_drawing_layer(page, centering_inset_pt, ctx)
+        sheet_drawing_layer(page, &size, centering_inset_pt, ctx)
     });
 
     write_table_page_setup(
@@ -988,6 +1015,8 @@ fn generate_table_page(
     if centering_inset_pt.is_some() {
         out.push_str("\n]\n");
     }
+    ctx.sheet_page_right_from_table_left_pt = enclosing_sheet_page_right;
+    ctx.sheet_page_left_from_table_left_pt = enclosing_sheet_page_left;
     Ok(())
 }
 
@@ -1053,6 +1082,15 @@ enum SheetAnchor<'a> {
     Chart(&'a crate::ir::SheetChart),
     Image(&'a crate::ir::SheetImage),
     TextBox(&'a crate::ir::SheetTextBox),
+}
+
+/// Vertical bounds that keep a sheet drawing between its top and bottom print
+/// margins. The width spans the page because per-drawing horizontal clipping
+/// is retained when a horizontal page split supplied it.
+struct SheetDrawingClip {
+    top_pt: f64,
+    page_width_pt: f64,
+    printable_height_pt: f64,
 }
 
 /// Render a sheet's grid, under the marker its drawing layer is pinned to and
@@ -1127,6 +1165,7 @@ struct SheetDrawingLayer {
 /// margins and any centering inset are folded into them here.
 fn sheet_drawing_layer(
     page: &SheetPage,
+    size: &PageSize,
     centering_inset_pt: Option<f64>,
     ctx: &mut GenCtx,
 ) -> Option<SheetDrawingLayer> {
@@ -1149,6 +1188,11 @@ fn sheet_drawing_layer(
 
     let left_pt: f64 = page.margins.left + centering_inset_pt.unwrap_or(0.0);
     let top_pt: f64 = page.margins.top;
+    let clip = SheetDrawingClip {
+        top_pt,
+        page_width_pt: size.width,
+        printable_height_pt: size.height - page.margins.top - page.margins.bottom,
+    };
 
     let mut foreground = String::new();
     // Typst has no z-index, so the page a foreground belongs to is decided by
@@ -1166,7 +1210,8 @@ fn sheet_drawing_layer(
             &mut foreground,
             &SheetAnchor::Chart(sheet_chart),
             left_pt,
-            top_pt + placement.y_offset_pt,
+            &clip,
+            placement.y_offset_pt,
             ctx,
         );
     }
@@ -1175,7 +1220,8 @@ fn sheet_drawing_layer(
             &mut foreground,
             &SheetAnchor::Image(sheet_image),
             left_pt,
-            top_pt + sheet_image.y_offset_pt,
+            &clip,
+            sheet_image.y_offset_pt,
             ctx,
         );
     }
@@ -1184,7 +1230,8 @@ fn sheet_drawing_layer(
             &mut foreground,
             &SheetAnchor::TextBox(text_box),
             left_pt,
-            top_pt + text_box.y_offset_pt,
+            &clip,
+            text_box.y_offset_pt,
             ctx,
         );
     }
@@ -1193,19 +1240,29 @@ fn sheet_drawing_layer(
     Some(SheetDrawingLayer { foreground, marker })
 }
 
-/// Place one drawing at `dy` from the page top, inside the drawing layer's
-/// markup block. `left_pt` is what the drawing's own horizontal offset is
-/// measured from.
+/// Place one drawing inside the page's printable-height window. A continued
+/// copy may start above that window, so the inner placement uses its signed
+/// sheet offset while the clip box stays pinned between the page margins.
+/// `left_pt` is what the drawing's own horizontal offset is measured from.
 fn write_placed_sheet_drawing(
     out: &mut String,
     anchor: &SheetAnchor,
     left_pt: f64,
-    dy_pt: f64,
+    clip: &SheetDrawingClip,
+    y_offset_pt: f64,
     ctx: &mut GenCtx,
 ) {
-    let _ = write!(out, "#place(top + left, dy: {}pt)[", format_f64(dy_pt));
+    let _ = write!(
+        out,
+        "#place(top + left, dy: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dy: {}pt)[",
+        format_f64(clip.top_pt),
+        format_f64(clip.page_width_pt),
+        format_f64(clip.printable_height_pt),
+        format_f64(y_offset_pt),
+    );
+    let dy_pt: f64 = clip.top_pt + y_offset_pt;
     write_placed_sheet_anchor(out, anchor, left_pt, dy_pt, ctx);
-    out.push(']');
+    out.push_str("]]]");
 }
 
 /// Place one drawing at its horizontal offset, inside the vertical `#place`
@@ -1225,11 +1282,25 @@ fn write_placed_sheet_anchor(
             // The anchor sizes the chart, the way a slide's graphicFrame
             // extent does (issue #548); rendering at the intrinsic size
             // instead left the anchored band empty beneath it (issue #982).
-            let _ = write!(
-                out,
-                "#place(top + left, dx: {}pt)[",
-                format_f64(left_pt + placement.x_offset_pt),
-            );
+            let clipped: bool = if let Some(clip_width) = placement.clip_width_pt {
+                let clip_left: f64 = placement.clip_left_pt.unwrap_or(0.0);
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + clip_left),
+                    format_f64(clip_width),
+                    format_f64(placement.height * placement.print_scale),
+                    format_f64(placement.x_offset_pt - clip_left),
+                );
+                true
+            } else {
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + placement.x_offset_pt),
+                );
+                false
+            };
             // A fitted sheet prints its drawings shrunk whole, so the chart is
             // laid out at its full frame and the transform brings its text down
             // with its geometry (issue #1069). The corner it grows from is the
@@ -1258,17 +1329,50 @@ fn write_placed_sheet_anchor(
             if fitted {
                 out.push(']');
             }
-            out.push(']');
+            if clipped {
+                out.push_str("]]]");
+            } else {
+                out.push(']');
+            }
         }
         SheetAnchor::TextBox(text_box) => {
+            let clipped: bool = if let Some(clip_width) = text_box.clip_width_pt {
+                let clip_left: f64 = text_box.clip_left_pt.unwrap_or(0.0);
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + clip_left),
+                    format_f64(clip_width),
+                    format_f64(text_box.height * text_box.print_scale),
+                    format_f64(text_box.x_offset_pt - clip_left),
+                );
+                true
+            } else {
+                let _ = write!(
+                    out,
+                    "#place(top + left, dx: {}pt)[",
+                    format_f64(left_pt + text_box.x_offset_pt),
+                );
+                false
+            };
+            let fitted: bool = text_box.print_scale != 1.0;
+            if fitted {
+                let percent: String = format_f64((text_box.print_scale * 1e6).round() / 1e4);
+                let _ = write!(
+                    out,
+                    "#scale(x: {percent}%, y: {percent}%, origin: top + left)[",
+                );
+            }
             let _ = write!(
                 out,
-                "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt",
-                format_f64(left_pt + text_box.x_offset_pt),
+                "#box(width: {}pt, height: {}pt",
                 format_f64(text_box.width),
                 format_f64(text_box.height),
             );
-            if let Some(fill) = text_box.fill {
+            if let Some(ref gradient) = text_box.gradient_fill {
+                out.push_str(", fill: ");
+                write_gradient_fill(out, gradient);
+            } else if let Some(fill) = text_box.fill {
                 let _ = write!(out, ", fill: {}", rgb(&fill));
             }
             if let Some(ref border) = text_box.border {
@@ -1289,7 +1393,14 @@ fn write_placed_sheet_anchor(
             if text_box.vertical_center {
                 out.push(']');
             }
-            out.push_str("]]");
+            out.push(']');
+            if fitted {
+                out.push(']');
+            }
+            out.push(']');
+            if clipped {
+                out.push_str("]]");
+            }
         }
         SheetAnchor::Image(sheet_image) => {
             // A page-column window from drawing-width pagination: the image
@@ -1302,13 +1413,14 @@ fn write_placed_sheet_anchor(
                 .zip(sheet_image.image.height)
                 .filter(|_| sheet_image.image.width.is_some());
             if let Some((clip_width, image_height)) = clip {
+                let clip_left: f64 = sheet_image.clip_left_pt.unwrap_or(0.0);
                 let _ = write!(
                     out,
                     "#place(top + left, dx: {}pt)[#box(width: {}pt, height: {}pt, clip: true)[#place(top + left, dx: {}pt)[",
-                    format_f64(left_pt),
+                    format_f64(left_pt + clip_left),
                     format_f64(clip_width),
                     format_f64(image_height),
-                    format_f64(sheet_image.x_offset_pt),
+                    format_f64(sheet_image.x_offset_pt - clip_left),
                 );
                 generate_image(out, &sheet_image.image, ctx);
                 out.push_str("]]]");

@@ -69,8 +69,7 @@ pub(in super::super) fn build_chart_context_from_xml(
         {
             chart.theme_accent_colors = theme_accents.clone();
             chart.host = crate::ir::ChartHost::WordProcessing;
-            chart.text_font_family =
-                theme_fonts.resolve_chart_text_typeface(chart.text_font_family.as_deref());
+            chart::resolve_chart_text_fonts(&mut chart, &theme_fonts);
             // The shapes the chart's own drawing part lays over it, which the
             // chart XML can only name through a relationship (issue #1186).
             chart.user_shapes = crate::parser::chart_drawing::load_chart_user_shapes(

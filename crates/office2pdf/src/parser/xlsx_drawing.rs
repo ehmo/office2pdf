@@ -104,8 +104,7 @@ pub(super) fn extract_charts_with_anchors(data: &[u8]) -> HashMap<String, Vec<Ra
                 if let Some(mut chart) = parse_chart_xml(&chart_xml, &scheme) {
                     chart.theme_accent_colors = theme_accents.clone();
                     chart.host = crate::ir::ChartHost::Spreadsheet;
-                    chart.text_font_family =
-                        theme_fonts.resolve_chart_text_typeface(chart.text_font_family.as_deref());
+                    crate::parser::chart::resolve_chart_text_fonts(&mut chart, &theme_fonts);
                     chart.user_shapes = crate::parser::chart_drawing::load_chart_user_shapes(
                         &mut archive,
                         &chart_path,
@@ -167,8 +166,7 @@ pub(super) fn extract_charts_with_anchors(data: &[u8]) -> HashMap<String, Vec<Ra
             if let Some(mut chart) = parse_chart_xml(&chart_xml, &scheme) {
                 chart.theme_accent_colors = theme_accents.clone();
                 chart.host = crate::ir::ChartHost::Spreadsheet;
-                chart.text_font_family =
-                    theme_fonts.resolve_chart_text_typeface(chart.text_font_family.as_deref());
+                crate::parser::chart::resolve_chart_text_fonts(&mut chart, &theme_fonts);
                 chart.user_shapes = crate::parser::chart_drawing::load_chart_user_shapes(
                     &mut archive,
                     path,
@@ -616,16 +614,13 @@ pub(super) struct RawImageAnchor {
 }
 
 /// Extract anchored pictures per sheet from worksheet drawings.
-/// Raster parts are sniffed and fully decoded; invalid rasters and unknown
-/// formats are omitted with an unsupported-element warning. Metafiles
-/// (EMF/WMF) are converted to SVG, with conversion failures omitted likewise.
+/// Raster parts are sniffed and fully decoded. Invalid rasters, missing media,
+/// unknown formats, and failed metafile conversion refuse the workbook before
+/// rendering so a picture cannot disappear behind a successful PDF.
 pub(super) fn extract_images_with_anchors(
     data: &[u8],
-    warnings: &mut Vec<crate::error::ConvertWarning>,
-) -> HashMap<String, Vec<RawImageAnchor>> {
-    let Ok(mut archive) = crate::parser::open_zip(data) else {
-        return HashMap::new();
-    };
+) -> Result<HashMap<String, Vec<RawImageAnchor>>, crate::error::ConvertError> {
+    let mut archive = crate::parser::open_zip(data)?;
 
     let workbook_xml = read_zip_entry_string(&mut archive, "xl/workbook.xml");
     let sheet_rids = parse_workbook_sheet_rids(&workbook_xml);
@@ -667,28 +662,37 @@ pub(super) fn extract_images_with_anchors(
             let rid_to_media = parse_rels_targets(&drawing_rels_xml);
 
             for (geometry, blip) in anchors {
-                let Some(media_target) = rid_to_media.get(&blip.rid) else {
-                    continue;
-                };
+                let media_target = rid_to_media.get(&blip.rid).ok_or_else(|| {
+                    crate::error::ConvertError::UnsupportedElement {
+                        format: "XLSX",
+                        element: format!("unresolved image relationship: {}", blip.rid),
+                    }
+                })?;
                 let media_path = resolve_relative_xl_path(drawing_dir, media_target);
-                let Some(bytes) = read_zip_entry_bytes(&mut archive, &media_path) else {
-                    continue;
-                };
-                let Some((data, format)) = decode_media(&media_path, bytes) else {
-                    warnings.push(crate::error::ConvertWarning::UnsupportedElement {
-                        format: "XLSX".to_string(),
-                        element: format!("image omitted: {media_path}"),
-                    });
-                    continue;
-                };
+                let bytes = read_zip_entry_bytes(&mut archive, &media_path).ok_or_else(|| {
+                    crate::error::ConvertError::UnsupportedElement {
+                        format: "XLSX",
+                        element: format!("missing image data: {media_path}"),
+                    }
+                })?;
+                let (data, format) = decode_media(&media_path, bytes).ok_or_else(|| {
+                    crate::error::ConvertError::UnsupportedElement {
+                        format: "XLSX",
+                        element: format!("unrenderable image: {media_path}"),
+                    }
+                })?;
                 // Excel composites a picture carrying `<a:alphaModFix>` onto
                 // the worksheet at that strength. Typst has no per-image
                 // opacity, so the factor is baked into the pixels the way the
                 // pptx picture path already bakes it (issue #1103).
                 let (data, format) = match blip.alpha {
                     Some(alpha) if alpha < 1.0 => {
-                        crate::parser::drawingml::apply_image_alpha(&data, alpha)
-                            .unwrap_or((data, format))
+                        crate::parser::drawingml::apply_image_alpha(&data, alpha).ok_or_else(
+                            || crate::error::ConvertError::UnsupportedElement {
+                                format: "XLSX",
+                                element: format!("unrenderable image transparency: {media_path}"),
+                            },
+                        )?
                     }
                     _ => (data, format),
                 };
@@ -709,7 +713,7 @@ pub(super) fn extract_images_with_anchors(
         }
     }
 
-    result
+    Ok(result)
 }
 
 fn read_zip_entry_bytes<R: std::io::Read + std::io::Seek>(
@@ -946,6 +950,7 @@ pub(super) struct RawTextBoxAnchor {
     pub(super) geometry: ImageAnchorGeometry,
     pub(super) paragraphs: Vec<crate::ir::Paragraph>,
     pub(super) fill: Option<crate::ir::Color>,
+    pub(super) gradient_fill: Option<crate::ir::GradientFill>,
     pub(super) border: Option<crate::ir::BorderSide>,
     pub(super) vertical_center: bool,
 }
@@ -1064,6 +1069,83 @@ pub(in crate::parser) fn apply_run_properties(
     }
 }
 
+/// Parse a worksheet shape's linear DrawingML gradient, resolving every stop
+/// against the workbook theme. The reader is consumed through `</a:gradFill>`.
+fn parse_drawing_gradient_fill(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    scheme: &crate::parser::drawingml::SchemeColors<'_>,
+) -> Option<crate::ir::GradientFill> {
+    use quick_xml::events::Event;
+
+    let mut in_stop_list = false;
+    let mut in_stop = false;
+    let mut current_position = 0.0;
+    let mut stops = Vec::new();
+    let mut angle = 0.0;
+    let mut depth = 1usize;
+
+    while depth > 0 {
+        match reader.read_event() {
+            Ok(Event::Start(ref element)) => {
+                depth += 1;
+                match element.local_name().as_ref() {
+                    b"gsLst" => in_stop_list = true,
+                    b"gs" if in_stop_list => {
+                        in_stop = true;
+                        current_position =
+                            xml_util::get_attr_i64(element, b"pos").unwrap_or(0) as f64 / 100_000.0;
+                    }
+                    b"srgbClr" | b"schemeClr" | b"sysClr" if in_stop => {
+                        if let Some(color) = crate::parser::drawingml::parse_color_from_start(
+                            reader, element, scheme,
+                        )
+                        .color
+                        {
+                            stops.push(crate::ir::GradientStop {
+                                position: current_position,
+                                color,
+                            });
+                        }
+                        // The shared color reader consumed this element's end tag.
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Empty(ref element)) => match element.local_name().as_ref() {
+                b"srgbClr" | b"schemeClr" | b"sysClr" if in_stop => {
+                    if let Some(color) =
+                        crate::parser::drawingml::parse_color_from_empty(element, scheme).color
+                    {
+                        stops.push(crate::ir::GradientStop {
+                            position: current_position,
+                            color,
+                        });
+                    }
+                }
+                b"lin" => {
+                    if let Some(raw) = xml_util::get_attr_i64(element, b"ang") {
+                        angle = (raw as f64 / 60_000.0).rem_euclid(360.0);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref element)) => {
+                depth = depth.saturating_sub(1);
+                match element.local_name().as_ref() {
+                    b"gsLst" => in_stop_list = false,
+                    b"gs" => in_stop = false,
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    (stops.len() >= 2).then_some(crate::ir::GradientFill { stops, angle })
+}
+
 /// Parse `<xdr:sp>` text boxes from a worksheet drawing, resolving scheme
 /// colors against the workbook theme palette and run typefaces against its
 /// font scheme.
@@ -1111,6 +1193,7 @@ pub(super) fn parse_drawing_text_boxes(
     let mut in_run = false;
     let mut in_text = false;
     let mut fill: Option<crate::ir::Color> = None;
+    let mut gradient_fill: Option<crate::ir::GradientFill> = None;
     let mut border_color: Option<crate::ir::Color> = None;
     let mut border_width: f64 = 0.75;
     let mut vertical_center = false;
@@ -1127,6 +1210,7 @@ pub(super) fn parse_drawing_text_boxes(
                         ext_emu = None;
                         paragraphs.clear();
                         fill = None;
+                        gradient_fill = None;
                         border_color = None;
                         border_width = 0.75;
                         vertical_center = false;
@@ -1143,6 +1227,9 @@ pub(super) fn parse_drawing_text_boxes(
                     b"sp" if in_anchor => in_sp = true,
                     b"txBody" if in_sp => in_tx_body = true,
                     b"solidFill" if in_sp && !in_tx_body && !in_line => in_sp_fill = true,
+                    b"gradFill" if in_sp && !in_tx_body && !in_line => {
+                        gradient_fill = parse_drawing_gradient_fill(&mut reader, &scheme);
+                    }
                     b"ln" if in_sp && !in_tx_body => {
                         in_line = true;
                         for attr in e.attributes().flatten() {
@@ -1317,6 +1404,7 @@ pub(super) fn parse_drawing_text_boxes(
                                 },
                                 paragraphs: std::mem::take(&mut paragraphs),
                                 fill,
+                                gradient_fill: gradient_fill.take(),
                                 border: border_color.map(|color| BorderSide {
                                     width: border_width,
                                     color,

@@ -6,12 +6,13 @@
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use super::drawingml::{self, SchemeColors};
+use super::drawingml::{self, SchemeColors, ThemeFontScheme};
 use super::xml_util;
 use crate::ir::{
     AxisTickMark, BarBandLayout, Chart, ChartAreaFill, ChartAreaOutline, ChartGrouping, ChartHost,
-    ChartLine, ChartPlotAreaLayout, ChartSeries, ChartTextStyle, ChartTitleLayout, ChartType,
-    Color, DataLabelPosition, DataLabels, LegendPosition, MarkerSymbol,
+    ChartLine, ChartPlotAreaLayout, ChartSecondaryValueAxis, ChartSeries, ChartTextStyle,
+    ChartTitleLayout, ChartType, Color, DataLabelPosition, DataLabels, LegendPosition,
+    MarkerSymbol,
 };
 
 /// Mapping from XML chart element tag names to their corresponding `ChartType`.
@@ -32,6 +33,31 @@ const CHART_TAG_TYPES: &[(&[u8], ChartType)] = &[
     (b"areaChart", ChartType::Area),
     (b"scatterChart", ChartType::Scatter),
 ];
+
+/// Resolve every chart text scope against the package theme that owns it.
+pub(crate) fn resolve_chart_text_fonts(chart: &mut Chart, theme: &ThemeFontScheme) {
+    chart.text_font_family = theme.resolve_chart_text_typeface(chart.text_font_family.as_deref());
+    for style in [
+        &mut chart.text_style,
+        &mut chart.title_text_style,
+        &mut chart.legend_text_style,
+        &mut chart.category_axis_text_style,
+        &mut chart.value_axis_text_style,
+        &mut chart.category_axis_title_text_style,
+        &mut chart.value_axis_title_text_style,
+    ] {
+        style.font_family = theme.resolve_chart_text_typeface(style.font_family.as_deref());
+    }
+    if let Some(axis) = chart.secondary_value_axis.as_mut() {
+        for style in [&mut axis.text_style, &mut axis.title_text_style] {
+            style.font_family = theme.resolve_chart_text_typeface(style.font_family.as_deref());
+        }
+    }
+    for series in &mut chart.series {
+        series.data_labels.text_style.font_family =
+            theme.resolve_chart_text_typeface(series.data_labels.text_style.font_family.as_deref());
+    }
+}
 
 /// Display labels for the plot-area families ECMA-376 defines that no plot
 /// implementation covers. They render through the data-table fallback, which
@@ -129,6 +155,100 @@ fn bar_direction_chart_type(direction: Option<&str>) -> Option<ChartType> {
     }
 }
 
+/// Axis identifiers and series owned by one plot-area family.
+struct ChartFamilyAxes {
+    chart_type: ChartType,
+    axis_ids: Vec<u64>,
+    series_indices: Vec<usize>,
+}
+
+/// Resolve semantic axes after the whole plot area has been read.
+///
+/// Axis elements follow the chart-family elements in ordinary OOXML, and a
+/// combo chart may carry two category/value pairs. Waiting until the end lets
+/// physical position select the primary pair while the family's `axId`s bind
+/// its line series to the independent right scale.
+fn resolve_chart_axes(
+    chart_type: &ChartType,
+    category_axes: &[Axis],
+    value_axes: &[Axis],
+    families: &[ChartFamilyAxes],
+) -> (Axis, Axis, Option<ChartSecondaryValueAxis>) {
+    if matches!(chart_type, ChartType::Scatter) {
+        let category = value_axes
+            .iter()
+            .find(|axis| axis.position.as_deref() == Some("b"))
+            .cloned()
+            .unwrap_or_default();
+        let value = value_axes
+            .iter()
+            .find(|axis| axis.position.as_deref() == Some("l"))
+            .cloned()
+            .or_else(|| value_axes.last().cloned())
+            .unwrap_or_default();
+        return (category, value, None);
+    }
+
+    let category_position = if matches!(chart_type, ChartType::Bar) {
+        "l"
+    } else {
+        "b"
+    };
+    let value_position = if matches!(chart_type, ChartType::Bar) {
+        "b"
+    } else {
+        "l"
+    };
+    let category = category_axes
+        .iter()
+        .find(|axis| axis.position.as_deref() == Some(category_position))
+        .cloned()
+        .or_else(|| category_axes.last().cloned())
+        .unwrap_or_default();
+    let value = value_axes
+        .iter()
+        .find(|axis| axis.position.as_deref() == Some(value_position))
+        .cloned()
+        .or_else(|| value_axes.last().cloned())
+        .unwrap_or_default();
+
+    let secondary = if matches!(chart_type, ChartType::Column) {
+        value_axes
+            .iter()
+            .find(|axis| axis.position.as_deref() == Some("r"))
+            .and_then(|axis| {
+                let axis_id = axis.id?;
+                let category_id = axis.cross_id?;
+                let series_indices: Vec<usize> = families
+                    .iter()
+                    .filter(|family| {
+                        matches!(family.chart_type, ChartType::Line)
+                            && family.axis_ids.contains(&axis_id)
+                            && family.axis_ids.contains(&category_id)
+                    })
+                    .flat_map(|family| family.series_indices.iter().copied())
+                    .collect();
+                (!series_indices.is_empty()).then(|| ChartSecondaryValueAxis {
+                    series_indices,
+                    title: axis.title.clone(),
+                    title_text_style: axis.title_text_style.clone(),
+                    text_style: axis.text_style.clone(),
+                    number_format: axis.number_format.clone(),
+                    major_tick_mark: axis.major_tick_mark,
+                    line: axis.line,
+                    major_unit: axis.major_unit,
+                    min: axis.min,
+                    max: axis.max,
+                    deleted: axis.deleted,
+                })
+            })
+    } else {
+        None
+    };
+
+    (category, value, secondary)
+}
+
 /// Parse a chart XML file (e.g., `word/charts/chart1.xml`) into a `Chart` IR.
 pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Chart> {
     let mut reader = Reader::from_str(xml);
@@ -150,8 +270,9 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
     // string for one of those, so the element's absence and its emptiness are
     // different states and `title` alone cannot tell them apart (issue #1146).
     let mut has_automatic_title: bool = false;
-    let mut category_axis: Axis = Axis::default();
-    let mut value_axis: Axis = Axis::default();
+    let mut category_axes: Vec<Axis> = Vec::new();
+    let mut value_axes: Vec<Axis> = Vec::new();
+    let mut family_axes: Vec<ChartFamilyAxes> = Vec::new();
     // `c:chartSpace/c:spPr` is a *sibling* of `c:chart`, and the schema puts it
     // after it. This loop is flat over every Start event, so without that
     // marker a `c:spPr` belonging to `c:plotArea` would be read as the chart
@@ -190,6 +311,8 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
                     let (family, style, _) = parse_chart_text_properties(&mut reader, scheme);
                     text_font_family = family;
                     text_style = style;
+                } else if tag == b"autoTitleDeleted" {
+                    auto_title_deleted = ct_boolean(e);
                 } else if tag == b"plotArea" {
                     in_plot_area = true;
                 } else if tag == b"layout" && in_plot_area && plot_area_layout.is_none() {
@@ -208,9 +331,9 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
                     title_text_style = style;
                     title_layout = layout;
                 } else if tag == b"catAx" {
-                    category_axis = parse_axis(&mut reader, b"catAx", scheme);
+                    category_axes.push(parse_axis(&mut reader, b"catAx", scheme));
                 } else if tag == b"valAx" {
-                    value_axis = parse_axis(&mut reader, b"valAx", scheme);
+                    value_axes.push(parse_axis(&mut reader, b"valAx", scheme));
                 } else if let Some(ct) = chart_type_for_tag(tag) {
                     let mut plot: PlotAreaProps = PlotAreaProps::default();
                     let family_first_series: usize = series.len();
@@ -239,6 +362,11 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
                     for entry in &mut series[family_first_series..] {
                         entry.plot_type = Some(family.clone());
                     }
+                    family_axes.push(ChartFamilyAxes {
+                        chart_type: family.clone(),
+                        axis_ids: plot.axis_ids.clone(),
+                        series_indices: (family_first_series..series.len()).collect(),
+                    });
                     // The bar family governs the chart: the value scale and the
                     // category bands are the ones its columns are drawn to, and
                     // the other families lay over them. Without this a
@@ -307,6 +435,8 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
 
     let chart_type = chart_type?;
     let default_band_layout: BarBandLayout = BarBandLayout::default();
+    let (category_axis, value_axis, secondary_value_axis) =
+        resolve_chart_axes(&chart_type, &category_axes, &value_axes, &family_axes);
 
     // `plot_type` records the family only where it differs from the chart's,
     // so a single-family chart carries none of it and hand-built IR reads the
@@ -355,7 +485,9 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
         // with the theme above, the loader fills these in (issue #1186).
         user_shapes: Vec::new(),
         category_axis_title: category_axis.title,
+        category_axis_title_text_style: category_axis.title_text_style,
         value_axis_title: value_axis.title,
+        value_axis_title_text_style: value_axis.title_text_style,
         category_axis_major_tick_mark: category_axis.major_tick_mark,
         value_axis_major_tick_mark: value_axis.major_tick_mark,
         category_axis_line: category_axis.line,
@@ -393,6 +525,7 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
         category_axis_text_style: category_axis.text_style,
         value_axis_text_style: value_axis.text_style,
         value_axis_number_format: value_axis.number_format,
+        secondary_value_axis,
     })
 }
 
@@ -542,6 +675,10 @@ fn parse_chart_text_properties(
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match e.local_name().as_ref() {
                     b"bodyPr" => {
+                        style.rotation_degrees = xml_util::get_attr_str(e, b"rot")
+                            .and_then(|value| value.parse::<f64>().ok())
+                            .map(|value| value / 60_000.0)
+                            .filter(|value| value.is_finite());
                         ellipsis = xml_util::get_attr_str(e, b"vertOverflow")
                             .is_some_and(|value| value == "ellipsis");
                     }
@@ -573,6 +710,7 @@ fn parse_chart_text_properties(
             _ => {}
         }
     }
+    style.font_family = typeface.clone();
     (typeface, style, ellipsis)
 }
 
@@ -615,6 +753,14 @@ fn read_def_rpr_into(element: &quick_xml::events::BytesStart<'_>, style: &mut Ch
         style.letter_spacing_hundredths =
             xml_util::get_attr_str(element, b"spc").and_then(|raw| raw.parse::<i32>().ok());
     }
+    if style.pair_kerning.is_none() {
+        // DrawingML stores the minimum size for pair kerning in hundredths of
+        // a point. Its explicit zero means never, as it does for ordinary
+        // DrawingML runs.
+        style.pair_kerning = xml_util::get_attr_str(element, b"kern")
+            .and_then(|raw| raw.parse::<u32>().ok())
+            .map(|hundredths| crate::ir::PairKerning::from_threshold_pt(hundredths as f64 / 100.0));
+    }
 }
 
 /// Read `c:chartSpace/c:spPr` into the chart area's fill and outline.
@@ -633,6 +779,7 @@ fn parse_chart_area_properties(
     let mut suppressed: bool = false;
     let mut width_pt: Option<f64> = None;
     let mut line_color: Option<Color> = None;
+    let mut round_join: bool = false;
     let mut in_area_solid_fill: bool = false;
     let mut in_line_solid_fill: bool = false;
 
@@ -655,6 +802,11 @@ fn parse_chart_area_properties(
                 suppressed = true;
             }
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if in_line && e.local_name().as_ref() == b"round" =>
+            {
+                round_join = true;
+            }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
                 if !in_line && e.local_name().as_ref() == b"noFill" =>
             {
                 fill = ChartAreaFill::Transparent;
@@ -672,7 +824,10 @@ fn parse_chart_area_properties(
             }
             Ok(Event::Start(ref e))
                 if (in_area_solid_fill || in_line_solid_fill)
-                    && matches!(e.local_name().as_ref(), b"srgbClr" | b"schemeClr") =>
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
             {
                 let parsed = drawingml::parse_color_from_start(reader, e, scheme).color;
                 if in_line_solid_fill {
@@ -683,7 +838,10 @@ fn parse_chart_area_properties(
             }
             Ok(Event::Empty(ref e))
                 if (in_area_solid_fill || in_line_solid_fill)
-                    && matches!(e.local_name().as_ref(), b"srgbClr" | b"schemeClr") =>
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
             {
                 let parsed = drawingml::parse_color_from_empty(e, scheme).color;
                 if in_line_solid_fill {
@@ -709,6 +867,7 @@ fn parse_chart_area_properties(
         ChartAreaOutline::Explicit {
             width_pt,
             color: line_color,
+            round_join,
         }
     };
 
@@ -719,9 +878,16 @@ fn parse_chart_area_properties(
 const EMU_PER_POINT: f64 = 12700.0;
 
 /// What one `<c:catAx>` or `<c:valAx>` element says about itself.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Axis {
+    /// `<c:axId>` — the identifier chart families use to select this axis.
+    id: Option<u64>,
+    /// `<c:crossAx>` — the reciprocal axis this one crosses.
+    cross_id: Option<u64>,
+    /// `<c:axPos>` — the physical edge this axis occupies.
+    position: Option<String>,
     title: Option<String>,
+    title_text_style: ChartTextStyle,
     major_tick_mark: AxisTickMark,
     deleted: bool,
     text_style: ChartTextStyle,
@@ -792,7 +958,11 @@ fn parse_axis(reader: &mut Reader<&[u8]>, end_tag: &[u8], scheme: &SchemeColors<
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"title" => {
-                axis.title = axis.title.or_else(|| parse_chart_title(reader, scheme).0);
+                let (title, _, style, _) = parse_chart_title(reader, scheme);
+                if axis.title.is_none() {
+                    axis.title = title;
+                    axis.title_text_style = style;
+                }
             }
             Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"txPr" => {
                 axis.text_style = parse_axis_text_properties(reader, scheme);
@@ -822,6 +992,22 @@ fn parse_axis(reader: &mut Reader<&[u8]>, end_tag: &[u8], scheme: &SchemeColors<
                     .as_deref()
                     .map(axis_tick_mark_for)
                     .unwrap_or_default();
+            }
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"axPos" =>
+            {
+                axis.position = xml_util::get_attr_str(e, b"val");
+            }
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"axId" =>
+            {
+                axis.id = xml_util::get_attr_str(e, b"val").and_then(|value| value.parse().ok());
+            }
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"crossAx" =>
+            {
+                axis.cross_id =
+                    xml_util::get_attr_str(e, b"val").and_then(|value| value.parse().ok());
             }
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
                 if e.local_name().as_ref() == b"majorUnit" =>
@@ -879,6 +1065,12 @@ fn parse_legend(
                 // the legend merely because we encounter it first.
                 b"legendEntry" => xml_util::skip_element(reader, b"legendEntry"),
                 b"txPr" => style = parse_chart_text_style(reader, scheme),
+                b"delete" => deleted = ct_boolean(e),
+                b"legendPos" => {
+                    position = xml_util::get_attr_str(e, b"val")
+                        .as_deref()
+                        .map(legend_position_for);
+                }
                 _ => {}
             },
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"legend" => break,
@@ -895,7 +1087,7 @@ fn parse_legend(
 /// turns the flag on.
 fn ct_boolean(element: &quick_xml::events::BytesStart) -> bool {
     xml_util::get_attr_str(element, b"val")
-        .map(|value| value == "1" || value == "true")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "on"))
         .unwrap_or(true)
 }
 
@@ -933,15 +1125,38 @@ fn parse_chart_title(
     let mut in_t = false;
     let mut names_own_text = false;
     let mut style: ChartTextStyle = ChartTextStyle::default();
+    let mut rich_default_style: ChartTextStyle = ChartTextStyle::default();
+    let mut rich_run_style: ChartTextStyle = ChartTextStyle::default();
     let mut layout: Option<ChartTitleLayout> = None;
     let mut depth = 1u32;
+    let mut in_rich = false;
+    let mut in_rich_rpr = false;
+    let mut rich_rpr_is_run = false;
+    let mut in_rich_solid_fill = false;
 
     loop {
         match reader.read_event() {
+            Ok(Event::Start(ref e))
+                if in_rich_solid_fill
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
+            {
+                let parsed = drawingml::parse_color_from_start(reader, e, scheme);
+                let target = if rich_rpr_is_run {
+                    &mut rich_run_style
+                } else {
+                    &mut rich_default_style
+                };
+                target.color = target.color.or(parsed.color);
+            }
             Ok(Event::Start(ref e)) => {
                 let local = e.local_name();
                 if local.as_ref() == b"title" {
                     depth += 1;
+                } else if local.as_ref() == b"rich" {
+                    in_rich = true;
                 } else if local.as_ref() == b"txPr" {
                     // Consumes through `</c:txPr>`, so the reader comes back on
                     // the title's next sibling.
@@ -952,6 +1167,73 @@ fn parse_chart_title(
                     names_own_text = true;
                 } else if local.as_ref() == b"t" {
                     in_t = true;
+                } else if in_rich && matches!(local.as_ref(), b"defRPr" | b"rPr") {
+                    rich_rpr_is_run = local.as_ref() == b"rPr";
+                    let target = if rich_rpr_is_run {
+                        &mut rich_run_style
+                    } else {
+                        &mut rich_default_style
+                    };
+                    read_def_rpr_into(e, target);
+                    in_rich_rpr = true;
+                } else if in_rich_rpr && local.as_ref() == b"solidFill" {
+                    in_rich_solid_fill = true;
+                } else if in_rich_rpr && local.as_ref() == b"latin" {
+                    let target = if rich_rpr_is_run {
+                        &mut rich_run_style
+                    } else {
+                        &mut rich_default_style
+                    };
+                    if target.font_family.is_none() {
+                        target.font_family = xml_util::get_attr_str(e, b"typeface")
+                            .filter(|face| !face.trim().is_empty());
+                    }
+                } else if in_rich && local.as_ref() == b"bodyPr" {
+                    rich_default_style.rotation_degrees = xml_util::get_attr_str(e, b"rot")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .map(|value| value / 60_000.0)
+                        .filter(|value| value.is_finite());
+                    rich_default_style.ellipsis_overflow =
+                        xml_util::get_attr_str(e, b"vertOverflow")
+                            .is_some_and(|value| value == "ellipsis");
+                }
+            }
+            Ok(Event::Empty(ref e)) => {
+                let local = e.local_name();
+                if in_rich && matches!(local.as_ref(), b"defRPr" | b"rPr") {
+                    let target = if local.as_ref() == b"rPr" {
+                        &mut rich_run_style
+                    } else {
+                        &mut rich_default_style
+                    };
+                    read_def_rpr_into(e, target);
+                } else if in_rich_rpr && local.as_ref() == b"latin" {
+                    let target = if rich_rpr_is_run {
+                        &mut rich_run_style
+                    } else {
+                        &mut rich_default_style
+                    };
+                    if target.font_family.is_none() {
+                        target.font_family = xml_util::get_attr_str(e, b"typeface")
+                            .filter(|face| !face.trim().is_empty());
+                    }
+                } else if in_rich_solid_fill {
+                    let target = if rich_rpr_is_run {
+                        &mut rich_run_style
+                    } else {
+                        &mut rich_default_style
+                    };
+                    if target.color.is_none() {
+                        target.color = drawingml::parse_color_from_empty(e, scheme).color;
+                    }
+                } else if in_rich && local.as_ref() == b"bodyPr" {
+                    rich_default_style.rotation_degrees = xml_util::get_attr_str(e, b"rot")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .map(|value| value / 60_000.0)
+                        .filter(|value| value.is_finite());
+                    rich_default_style.ellipsis_overflow =
+                        xml_util::get_attr_str(e, b"vertOverflow")
+                            .is_some_and(|value| value == "ellipsis");
                 }
             }
             Ok(Event::Text(ref t)) if in_t => {
@@ -968,6 +1250,13 @@ fn parse_chart_title(
                 let local = e.local_name();
                 if local.as_ref() == b"t" {
                     in_t = false;
+                } else if local.as_ref() == b"solidFill" {
+                    in_rich_solid_fill = false;
+                } else if matches!(local.as_ref(), b"defRPr" | b"rPr") {
+                    in_rich_rpr = false;
+                    rich_rpr_is_run = false;
+                } else if local.as_ref() == b"rich" {
+                    in_rich = false;
                 } else if local.as_ref() == b"title" {
                     depth -= 1;
                     if depth == 0 {
@@ -986,6 +1275,34 @@ fn parse_chart_title(
     } else {
         Some(trimmed)
     };
+    rich_default_style.font_family = rich_run_style
+        .font_family
+        .or(rich_default_style.font_family);
+    rich_default_style.size_pt = rich_run_style.size_pt.or(rich_default_style.size_pt);
+    rich_default_style.bold = rich_run_style.bold.or(rich_default_style.bold);
+    rich_default_style.letter_spacing_hundredths = rich_run_style
+        .letter_spacing_hundredths
+        .or(rich_default_style.letter_spacing_hundredths);
+    rich_default_style.pair_kerning = rich_run_style
+        .pair_kerning
+        .or(rich_default_style.pair_kerning);
+    rich_default_style.color = rich_run_style.color.or(rich_default_style.color);
+    rich_default_style.rotation_degrees = rich_run_style
+        .rotation_degrees
+        .or(rich_default_style.rotation_degrees);
+    rich_default_style.ellipsis_overflow |= rich_run_style.ellipsis_overflow;
+    style.font_family = rich_default_style.font_family.or(style.font_family);
+    style.size_pt = rich_default_style.size_pt.or(style.size_pt);
+    style.bold = rich_default_style.bold.or(style.bold);
+    style.letter_spacing_hundredths = rich_default_style
+        .letter_spacing_hundredths
+        .or(style.letter_spacing_hundredths);
+    style.pair_kerning = rich_default_style.pair_kerning.or(style.pair_kerning);
+    style.color = rich_default_style.color.or(style.color);
+    style.rotation_degrees = rich_default_style
+        .rotation_degrees
+        .or(style.rotation_degrees);
+    style.ellipsis_overflow |= rich_default_style.ellipsis_overflow;
     (title, names_own_text, style, layout)
 }
 
@@ -994,6 +1311,8 @@ fn parse_chart_title(
 /// Office writes them all self-closing, so they arrive as `Empty` events.
 #[derive(Debug, Default)]
 struct PlotAreaProps {
+    /// The axes this family selects, in the order stated by `<c:axId>`.
+    axis_ids: Vec<u64>,
     /// `<c:barDir>`, exclusive to the bar family.
     bar_direction: Option<String>,
     /// `<c:grouping>`.
@@ -1019,6 +1338,13 @@ impl PlotAreaProps {
             b"gapWidth" => self.gap_width = xml_util::get_attr_str(e, b"val"),
             b"overlap" => self.overlap = xml_util::get_attr_str(e, b"val"),
             b"holeSize" => self.hole_size = xml_util::get_attr_str(e, b"val"),
+            b"axId" => {
+                if let Some(id) =
+                    xml_util::get_attr_str(e, b"val").and_then(|value| value.parse().ok())
+                {
+                    self.axis_ids.push(id);
+                }
+            }
             _ => return false,
         }
         true
@@ -1110,6 +1436,7 @@ fn parse_single_series(
         std::collections::BTreeMap::new();
     let mut number_format: Option<String> = None;
     let mut marker_symbol: Option<MarkerSymbol> = None;
+    let mut marker_size_pt: Option<f64> = None;
     let mut line_width_pt: Option<f64> = None;
 
     loop {
@@ -1138,7 +1465,7 @@ fn parse_single_series(
                 }
                 // Consumed whole for the same reason as `<c:dLbls>`: the
                 // marker carries an `<c:spPr>` for the symbol's own fill.
-                b"marker" => marker_symbol = parse_series_marker(reader),
+                b"marker" => (marker_symbol, marker_size_pt) = parse_series_marker(reader),
                 // Consumed whole: `<c:dLbls>` carries an `<c:spPr>` of its
                 // own for the label box, which would otherwise be read as the
                 // series fill.
@@ -1176,6 +1503,7 @@ fn parse_single_series(
             // series was read inside (issue #1067).
             plot_type: None,
             marker_symbol,
+            marker_size_pt,
             line_width_pt,
         },
         categories,
@@ -1265,7 +1593,7 @@ fn data_label_position_for(value: &str) -> Option<DataLabelPosition> {
     }
 }
 
-/// Read a `<c:ser><c:marker>` into the point symbol it names.
+/// Read a `<c:ser><c:marker>` into its point symbol and diameter in points.
 ///
 /// Consumed whole whether or not it names one this renderer draws: the element
 /// carries an `<c:spPr>` for the symbol's own fill, which the flat series loop
@@ -1274,8 +1602,9 @@ fn data_label_position_for(value: &str) -> Option<DataLabelPosition> {
 /// The `<c:marker val="1"/>` that sits beside the `<c:ser>` elements of a
 /// `<c:lineChart>` is a different element — `CT_Boolean`, saying whether the
 /// family shows markers at all — and never reaches here, being empty.
-fn parse_series_marker(reader: &mut Reader<&[u8]>) -> Option<MarkerSymbol> {
+fn parse_series_marker(reader: &mut Reader<&[u8]>) -> (Option<MarkerSymbol>, Option<f64>) {
     let mut symbol: Option<MarkerSymbol> = None;
+    let mut size_pt: Option<f64> = None;
 
     loop {
         match reader.read_event() {
@@ -1286,13 +1615,21 @@ fn parse_series_marker(reader: &mut Reader<&[u8]>) -> Option<MarkerSymbol> {
                     .as_deref()
                     .and_then(marker_symbol_for);
             }
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
+                if e.local_name().as_ref() == b"size" =>
+            {
+                size_pt = xml_util::get_attr_str(e, b"val")
+                    .and_then(|value| value.parse::<u8>().ok())
+                    .filter(|size| (2..=72).contains(size))
+                    .map(f64::from);
+            }
             Ok(Event::End(ref e)) if e.local_name().as_ref() == b"marker" => break,
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
     }
 
-    symbol
+    (symbol, size_pt)
 }
 
 /// `<c:symbol val>` as ECMA-376 §21.2.3.29 `ST_MarkerStyle` names the symbols.
@@ -1383,13 +1720,19 @@ fn parse_chart_line(
             }
             Ok(Event::Start(ref e))
                 if in_solid_fill
-                    && matches!(e.local_name().as_ref(), b"srgbClr" | b"schemeClr") =>
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
             {
                 color = color.or(drawingml::parse_color_from_start(reader, e, scheme).color);
             }
             Ok(Event::Empty(ref e))
                 if in_solid_fill
-                    && matches!(e.local_name().as_ref(), b"srgbClr" | b"schemeClr") =>
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
             {
                 color = color.or(drawingml::parse_color_from_empty(e, scheme).color);
             }
@@ -1473,14 +1816,20 @@ fn parse_shape_properties(
             }
             Ok(Event::Start(ref e))
                 if in_solid_fill
-                    && matches!(e.local_name().as_ref(), b"srgbClr" | b"schemeClr") =>
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
             {
                 let parsed = drawingml::parse_color_from_start(reader, e, scheme);
                 properties.fill = properties.fill.or(parsed.color);
             }
             Ok(Event::Empty(ref e))
                 if in_solid_fill
-                    && matches!(e.local_name().as_ref(), b"srgbClr" | b"schemeClr") =>
+                    && matches!(
+                        e.local_name().as_ref(),
+                        b"srgbClr" | b"schemeClr" | b"sysClr"
+                    ) =>
             {
                 properties.fill = properties
                     .fill
