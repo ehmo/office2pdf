@@ -3112,6 +3112,25 @@ fn a_scatter_only_plot_area_still_reads_as_a_scatter_chart() {
     assert!(chart.series.iter().all(|series| series.plot_type.is_none()));
 }
 
+#[test]
+fn a_scatter_only_plot_assigns_its_bottom_and_left_numeric_axes_by_edge() {
+    let family = r#"<c:scatterChart><c:scatterStyle val="lineMarker"/><c:ser><c:idx val="0"/><c:order val="0"/><c:xVal><c:numLit><c:pt idx="0"><c:v>15</c:v></c:pt><c:pt idx="1"><c:v>29</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:pt idx="0"><c:v>12</c:v></c:pt><c:pt idx="1"><c:v>31</c:v></c:pt></c:numLit></c:yVal></c:ser></c:scatterChart>"#;
+    let bottom = r#"<c:valAx><c:axPos val="b"/><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Quarter</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx>"#;
+    let left = r#"<c:valAx><c:axPos val="l"/><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Value</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx>"#;
+
+    for axes in [format!("{bottom}{left}"), format!("{left}{bottom}")] {
+        let xml = format!(
+            r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:plotArea>{family}{axes}</c:plotArea></c:chart></c:chartSpace>"#
+        );
+        let chart = parse_chart_xml(&xml, &SchemeColors::empty()).unwrap();
+
+        assert_eq!(chart.chart_type, ChartType::Scatter);
+        assert_eq!(chart.categories, vec!["15", "29"]);
+        assert_eq!(chart.category_axis_title.as_deref(), Some("Quarter"));
+        assert_eq!(chart.value_axis_title.as_deref(), Some("Value"));
+    }
+}
+
 /// The bar family still outranks a scatter that follows it, as it does every
 /// other family (issue #1067).
 #[test]

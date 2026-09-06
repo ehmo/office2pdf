@@ -232,7 +232,21 @@ pub(crate) fn parse_chart_xml(xml: &str, scheme: &SchemeColors<'_>) -> Option<Ch
                 } else if tag == b"catAx" {
                     category_axis = parse_axis(&mut reader, b"catAx", scheme);
                 } else if tag == b"valAx" {
-                    value_axis = parse_axis(&mut reader, b"valAx", scheme);
+                    let axis = parse_axis(&mut reader, b"valAx", scheme);
+                    // A scatter has two numeric value axes rather than one
+                    // category axis and one value axis. The rest of the IR
+                    // names axes by their physical role, so retain the bottom
+                    // numeric axis in the category slots and the left numeric
+                    // axis in the value slots. Without this the second
+                    // `<c:valAx>` overwrote the first and its x-axis title and
+                    // styling disappeared.
+                    if matches!(chart_type.as_ref(), Some(ChartType::Scatter))
+                        && axis.position.as_deref() == Some("b")
+                    {
+                        category_axis = axis;
+                    } else {
+                        value_axis = axis;
+                    }
                 } else if let Some(ct) = chart_type_for_tag(tag) {
                     let mut plot: PlotAreaProps = PlotAreaProps::default();
                     let family_first_series: usize = series.len();
@@ -771,6 +785,8 @@ const EMU_PER_POINT: f64 = 12700.0;
 /// What one `<c:catAx>` or `<c:valAx>` element says about itself.
 #[derive(Default)]
 struct Axis {
+    /// `<c:axPos>` — the physical edge this axis occupies.
+    position: Option<String>,
     title: Option<String>,
     title_text_style: ChartTextStyle,
     major_tick_mark: AxisTickMark,
@@ -877,6 +893,11 @@ fn parse_axis(reader: &mut Reader<&[u8]>, end_tag: &[u8], scheme: &SchemeColors<
                     .as_deref()
                     .map(axis_tick_mark_for)
                     .unwrap_or_default();
+            }
+            Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
+                if e.local_name().as_ref() == b"axPos" =>
+            {
+                axis.position = xml_util::get_attr_str(e, b"val");
             }
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e))
                 if e.local_name().as_ref() == b"majorUnit" =>

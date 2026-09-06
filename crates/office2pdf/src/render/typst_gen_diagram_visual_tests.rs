@@ -3243,6 +3243,57 @@ fn stacked_area_chart() -> Chart {
     chart
 }
 
+fn numeric_scatter_chart() -> Chart {
+    let mut chart = line_chart_with_markers([Some(MarkerSymbol::Diamond), None]);
+    chart.chart_type = ChartType::Scatter;
+    chart.categories = [15.0, 17.0, 20.0, 24.0, 29.0]
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect();
+    chart.series.truncate(1);
+    chart.series[0].values = vec![12.0, 19.0, 14.0, 27.0, 31.0];
+    chart.series[0].data_labels.show_value = true;
+    chart.category_axis_title = Some("Quarter".to_string());
+    chart.value_axis_title = Some("Value".to_string());
+    chart
+}
+
+#[test]
+fn a_numeric_scatter_uses_x_values_for_nonuniform_point_spacing() {
+    let source = chart_source(numeric_scatter_chart());
+    assert!(
+        !source.contains("Scatter Chart"),
+        "a drawable scatter must not fall back to a data table: {source}"
+    );
+
+    let points = emitted_path_points(&source);
+    assert_eq!(
+        points.len(),
+        5,
+        "the five cached points must draw: {source}"
+    );
+    let gaps: Vec<f64> = points
+        .windows(2)
+        .map(|pair| pair[1].0 - pair[0].0)
+        .collect();
+    assert!(
+        gaps.windows(2).all(|pair| pair[0] < pair[1]),
+        "x gaps 2, 3, 4, 5 must widen instead of using category bands: {gaps:?}"
+    );
+}
+
+#[test]
+fn a_numeric_scatter_draws_its_value_labels_and_both_axis_titles() {
+    let source = chart_source(numeric_scatter_chart());
+
+    for text in ["Quarter", "Value", "12", "19", "14", "27", "31"] {
+        assert!(
+            source.contains(&format!("[{text}]")),
+            "missing {text}: {source}"
+        );
+    }
+}
+
 #[test]
 fn a_stacked_area_chart_draws_one_closed_filled_region_per_series() {
     let source = chart_source(stacked_area_chart());

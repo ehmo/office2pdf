@@ -2392,14 +2392,23 @@ mod tests {
     }
 
     #[test]
-    fn chart_preflight_rejects_scatter_and_accepts_a_drawable_column_chart() {
-        let scatter = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:scatterChart><c:ser><c:xVal><c:numLit><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>10</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:pt idx="0"><c:v>2</c:v></c:pt><c:pt idx="1"><c:v>3</c:v></c:pt></c:numLit></c:yVal></c:ser></c:scatterChart></c:plotArea></c:chart></c:chartSpace>"#;
+    fn chart_preflight_accepts_only_the_scatter_geometry_the_renderer_draws() {
+        let scatter = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:scatterChart><c:scatterStyle val="lineMarker"/><c:ser><c:idx val="0"/><c:order val="0"/><c:marker><c:symbol val="diamond"/><c:size val="7"/></c:marker><c:xVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>10</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>2</c:v></c:pt><c:pt idx="1"><c:v>3</c:v></c:pt></c:numLit></c:yVal></c:ser><c:axId val="1"/><c:axId val="2"/></c:scatterChart><c:valAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/><c:crossBetween val="midCat"/></c:valAx><c:valAx><c:axId val="2"/><c:axPos val="l"/><c:crossAx val="1"/><c:crossBetween val="midCat"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#;
+        validate_chart_xml(scatter, "Budget")
+            .expect("a single line-marker series with bottom/left numeric axes is drawable");
         assert_unsupported(
-            validate_chart_xml(scatter, "Budget")
-                .expect_err("scatter values are not plotted on a numeric x-axis"),
-            "unsupported chart plot family on sheet: Budget",
+            validate_chart_xml(&scatter.replace("lineMarker", "smoothMarker"), "Budget")
+                .expect_err("a curved style the renderer does not draw must fail closed"),
+            "unsupported chart detail scatterStyle on sheet: Budget",
         );
-
+        assert_unsupported(
+            validate_chart_xml(
+                &scatter.replace(r#"<c:scatterStyle val="lineMarker"/>"#, ""),
+                "Budget",
+            )
+            .expect_err("an unstated scatter style must fail closed"),
+            "unsupported chart detail scatterStyle on sheet: Budget",
+        );
         let column = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:pt idx="0"><c:v>A</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>4</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>"#;
         validate_chart_xml(column, "Budget").expect("the column chart has a plotted series");
         assert_unsupported(
@@ -2413,6 +2422,44 @@ mod tests {
             .expect_err("extra attributes on a modeled chart property must refuse"),
             "unsupported chart detail barDir on sheet: Budget",
         );
+    }
+
+    #[test]
+    fn chart_preflight_rejects_unrendered_scatter_x_axis_settings() {
+        let scatter = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:scatterChart><c:scatterStyle val="lineMarker"/><c:ser><c:idx val="0"/><c:order val="0"/><c:xVal><c:numLit><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>10</c:v></c:pt></c:numLit></c:xVal><c:yVal><c:numLit><c:pt idx="0"><c:v>2</c:v></c:pt><c:pt idx="1"><c:v>3</c:v></c:pt></c:numLit></c:yVal></c:ser><c:axId val="1"/><c:axId val="2"/></c:scatterChart><c:valAx><c:axId val="1"/><c:axPos val="b"/><c:crossAx val="2"/><c:crossBetween val="midCat"/></c:valAx><c:valAx><c:axId val="2"/><c:axPos val="l"/><c:crossAx val="1"/><c:crossBetween val="midCat"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#;
+        for (name, feature) in [
+            ("minimum", r#"<c:scaling><c:min val="1"/></c:scaling>"#),
+            ("maximum", r#"<c:scaling><c:max val="12"/></c:scaling>"#),
+            ("major unit", r#"<c:majorUnit val="2"/>"#),
+            (
+                "number format",
+                r#"<c:numFmt formatCode="0.0" sourceLinked="0"/>"#,
+            ),
+        ] {
+            let result = validate_chart_xml(
+                &scatter.replace(
+                    r#"<c:axPos val="b"/>"#,
+                    &format!(r#"{feature}<c:axPos val="b"/>"#),
+                ),
+                "Budget",
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(()) => panic!("an unrendered numeric x-axis {name} must fail closed"),
+            };
+            assert_unsupported(
+                error,
+                "unsupported chart detail scatter x-axis settings on sheet: Budget",
+            );
+        }
+        validate_chart_xml(
+            &scatter.replace(
+                r#"<c:axPos val="l"/>"#,
+                r#"<c:scaling><c:min val="0"/><c:max val="4"/></c:scaling><c:axPos val="l"/><c:majorUnit val="1"/><c:numFmt formatCode="0.0" sourceLinked="0"/>"#,
+            ),
+            "Budget",
+        )
+        .expect("the rendered y-axis may keep explicit bounds, ticks, and formatting");
     }
 
     #[test]
@@ -4896,6 +4943,25 @@ fn validate_series_shape_element(
 }
 
 #[derive(Default)]
+struct ValueAxisPreflight {
+    position: Option<String>,
+    has_min: bool,
+    has_max: bool,
+    has_major_unit: bool,
+    has_non_general_number_format: bool,
+}
+
+impl ValueAxisPreflight {
+    fn has_unrendered_scatter_x_setting(&self) -> bool {
+        self.position.as_deref() == Some("b")
+            && (self.has_min
+                || self.has_max
+                || self.has_major_unit
+                || self.has_non_general_number_format)
+    }
+}
+
+#[derive(Default)]
 struct ChartPreflightScan {
     cat_axes: usize,
     val_axes: usize,
@@ -4903,6 +4969,9 @@ struct ChartPreflightScan {
     val_axis_positions: Vec<String>,
     cross_between: Vec<String>,
     line_family_seen: bool,
+    scatter_family_seen: bool,
+    scatter_family_count: usize,
+    scatter_style_count: usize,
     line_marker_enabled: Option<bool>,
     cache_expected: Option<usize>,
     cache_indices: Option<Vec<usize>>,
@@ -4930,6 +4999,8 @@ struct ChartPreflightScan {
     value_axis_ids: Vec<u64>,
     category_cross_axis_ids: Vec<u64>,
     value_cross_axis_ids: Vec<u64>,
+    current_value_axis: Option<ValueAxisPreflight>,
+    value_axis_details: Vec<ValueAxisPreflight>,
     child_frames: Vec<HashSet<Vec<u8>>>,
 }
 
@@ -4986,6 +5057,10 @@ impl ChartPreflightScan {
                 }
                 self.current_family_axis_ids = Some(Vec::new());
                 self.line_family_seen |= name == b"lineChart";
+                self.scatter_family_seen |= name == b"scatterChart";
+                if name == b"scatterChart" {
+                    self.scatter_family_count += 1;
+                }
             }
             b"rich" => {
                 self.rich_text_open = true;
@@ -5145,7 +5220,13 @@ impl ChartPreflightScan {
                 }
             }
             b"catAx" => self.cat_axes += 1,
-            b"valAx" => self.val_axes += 1,
+            b"valAx" => {
+                self.val_axes += 1;
+                if self.current_value_axis.is_some() {
+                    return Err(chart_detail(sheet_name, "nested value axis"));
+                }
+                self.current_value_axis = Some(ValueAxisPreflight::default());
+            }
             b"axId" => {
                 let Some(value) = chart_exact_attribute(reader, element, b"val")
                     .and_then(|value| value.parse::<u64>().ok())
@@ -5196,6 +5277,12 @@ impl ChartPreflightScan {
                     return Err(chart_detail(sheet_name, "conflicting line marker switches"));
                 }
                 self.line_marker_enabled = Some(enabled);
+            }
+            b"scatterStyle" if parent == Some(b"scatterChart") => {
+                if chart_exact_attribute(reader, element, b"val").as_deref() != Some("lineMarker") {
+                    return Err(chart_detail(sheet_name, "scatterStyle"));
+                }
+                self.scatter_style_count += 1;
             }
             b"symbol" if parent == Some(b"marker") && self.current_series.is_some() => {
                 if !matches!(
@@ -5250,8 +5337,38 @@ impl ChartPreflightScan {
                 if ancestors.iter().rev().any(|name| name == b"catAx") {
                     self.cat_axis_positions.push(position);
                 } else if ancestors.iter().rev().any(|name| name == b"valAx") {
-                    self.val_axis_positions.push(position);
+                    self.val_axis_positions.push(position.clone());
+                    let Some(axis) = self.current_value_axis.as_mut() else {
+                        return Err(chart_detail(sheet_name, "axis position"));
+                    };
+                    axis.position = Some(position);
                 }
+            }
+            b"min" if ancestors.iter().any(|name| name == b"valAx") => {
+                let Some(axis) = self.current_value_axis.as_mut() else {
+                    return Err(chart_detail(sheet_name, "axis scaling"));
+                };
+                axis.has_min = true;
+            }
+            b"max" if ancestors.iter().any(|name| name == b"valAx") => {
+                let Some(axis) = self.current_value_axis.as_mut() else {
+                    return Err(chart_detail(sheet_name, "axis scaling"));
+                };
+                axis.has_max = true;
+            }
+            b"majorUnit" if parent == Some(b"valAx") => {
+                let Some(axis) = self.current_value_axis.as_mut() else {
+                    return Err(chart_detail(sheet_name, "axis tick interval"));
+                };
+                axis.has_major_unit = true;
+            }
+            b"numFmt" if parent == Some(b"valAx") => {
+                let Some(axis) = self.current_value_axis.as_mut() else {
+                    return Err(chart_detail(sheet_name, "axis number format"));
+                };
+                axis.has_non_general_number_format = chart_drawing_attributes(reader, element)
+                    .and_then(|attributes| attributes.get(b"formatCode".as_slice()).cloned())
+                    .is_some_and(|code| !code.trim().eq_ignore_ascii_case("General"));
             }
             b"crossBetween" => {
                 let Some(value) = chart_exact_attribute(reader, element, b"val") else {
@@ -5363,6 +5480,12 @@ impl ChartPreflightScan {
         if name == b"ser" {
             self.current_series = None;
         }
+        if name == b"valAx" {
+            let Some(axis) = self.current_value_axis.take() else {
+                return Err(chart_detail(sheet_name, "value axis structure"));
+            };
+            self.value_axis_details.push(axis);
+        }
         if name == b"dPt" {
             match self.current_data_point_index.take().flatten() {
                 Some(index) => {
@@ -5415,6 +5538,22 @@ fn chart_axis_topology_is_valid(scan: &ChartPreflightScan) -> bool {
         || !scan.value_cross_axis_ids.is_empty();
     if !any_stated {
         return true;
+    }
+    if scan.scatter_family_seen {
+        let ([], [first, second], [], [first_cross, second_cross]) = (
+            scan.category_axis_ids.as_slice(),
+            scan.value_axis_ids.as_slice(),
+            scan.category_cross_axis_ids.as_slice(),
+            scan.value_cross_axis_ids.as_slice(),
+        ) else {
+            return false;
+        };
+        if first == second || first_cross != second || second_cross != first {
+            return false;
+        }
+        return scan.family_axis_ids.iter().all(|ids| {
+            ids.len() == 2 && ids.contains(first) && ids.contains(second) && ids[0] != ids[1]
+        });
     }
     let ([category], [value], [category_cross], [value_cross]) = (
         scan.category_axis_ids.as_slice(),
@@ -5509,11 +5648,23 @@ fn validate_chart_xml_with_hidden_sources(
             _ => {}
         }
     }
-    if scan.bad_cache
-        || scan.cat_axes > 1
-        || scan.val_axes > 1
-        || !chart_axis_topology_is_valid(&scan)
+    if scan.scatter_family_seen && scan.scatter_style_count != scan.scatter_family_count {
+        return Err(chart_detail(sheet_name, "scatterStyle"));
+    }
+    if scan.scatter_family_seen
+        && scan
+            .value_axis_details
+            .iter()
+            .any(ValueAxisPreflight::has_unrendered_scatter_x_setting)
     {
+        return Err(chart_detail(sheet_name, "scatter x-axis settings"));
+    }
+    let axis_count_is_invalid = if scan.scatter_family_seen {
+        scan.cat_axes != 0 || scan.val_axes != 2
+    } else {
+        scan.cat_axes > 1 || scan.val_axes > 1
+    };
+    if scan.bad_cache || axis_count_is_invalid || !chart_axis_topology_is_valid(&scan) {
         let detail = if scan.bad_cache {
             "non-contiguous data cache"
         } else if !chart_axis_topology_is_valid(&scan) {
@@ -5551,9 +5702,7 @@ fn validate_chart_xml_with_hidden_sources(
     {
         return Err(chart_detail(sheet_name, "data point formatting"));
     }
-    if matches!(chart.chart_type, ChartType::Scatter)
-        || matches!(&chart.chart_type, ChartType::Other(kind) if kind != crate::ir::RADAR_CHART_LABEL)
-    {
+    if matches!(&chart.chart_type, ChartType::Other(kind) if kind != crate::ir::RADAR_CHART_LABEL) {
         return Err(chart_plot(sheet_name, "family"));
     }
     if let Some(plot_type) = chart
@@ -5617,36 +5766,42 @@ fn validate_chart_xml_with_hidden_sources(
             -90.0,
         )
     };
-    let category_crossing_mismatch = if matches!(chart.chart_type, ChartType::Area) {
-        scan.cross_between.iter().any(|value| value != "midCat")
+    let category_crossing_mismatch =
+        if matches!(chart.chart_type, ChartType::Area | ChartType::Scatter) {
+            scan.cross_between.iter().any(|value| value != "midCat")
+        } else {
+            scan.cross_between.iter().any(|value| value != "between")
+        };
+    let axis_position_mismatch = if matches!(chart.chart_type, ChartType::Scatter) {
+        !scan.cat_axis_positions.is_empty()
+            || scan.val_axis_positions.len() != 2
+            || !scan
+                .val_axis_positions
+                .iter()
+                .any(|position| position == "b")
+            || !scan
+                .val_axis_positions
+                .iter()
+                .any(|position| position == "l")
     } else {
-        scan.cross_between.iter().any(|value| value != "between")
-    };
-    if line_series_marker_mismatch
-        || axis_title_orientation_mismatch
-        || scan
-            .cat_axis_positions
-            .iter()
-            .any(|position| position != expected_cat_axis)
-        || scan
-            .val_axis_positions
-            .iter()
-            .any(|position| position != expected_val_axis)
-        || category_crossing_mismatch
-    {
-        let detail = if line_series_marker_mismatch {
-            "line marker visibility"
-        } else if axis_title_orientation_mismatch {
-            "text orientation"
-        } else if scan
-            .cat_axis_positions
+        scan.cat_axis_positions
             .iter()
             .any(|position| position != expected_cat_axis)
             || scan
                 .val_axis_positions
                 .iter()
                 .any(|position| position != expected_val_axis)
-        {
+    };
+    if line_series_marker_mismatch
+        || axis_title_orientation_mismatch
+        || axis_position_mismatch
+        || category_crossing_mismatch
+    {
+        let detail = if line_series_marker_mismatch {
+            "line marker visibility"
+        } else if axis_title_orientation_mismatch {
+            "text orientation"
+        } else if axis_position_mismatch {
             "axis position"
         } else {
             "category crossing"
@@ -5661,6 +5816,15 @@ fn validate_chart_xml_with_hidden_sources(
         ChartType::Line | ChartType::Area => {
             !chart.series.is_empty() && chart.categories.len() >= 2
         }
+        ChartType::Scatter => {
+            chart.series.len() == 1
+                && chart.categories.len() >= 2
+                && chart.series[0].values.len() == chart.categories.len()
+                && chart
+                    .categories
+                    .iter()
+                    .all(|value| value.parse::<f64>().is_ok_and(|value| value.is_finite()))
+        }
         ChartType::Pie | ChartType::Doughnut => chart
             .series
             .first()
@@ -5673,7 +5837,7 @@ fn validate_chart_xml_with_hidden_sources(
                     .iter()
                     .any(|series| series.values.iter().any(|value| *value > 0.0))
         }
-        ChartType::Scatter | ChartType::Other(_) => false,
+        ChartType::Other(_) => false,
     };
     if !drawable {
         return Err(chart_plot(sheet_name, "without drawable cached data"));

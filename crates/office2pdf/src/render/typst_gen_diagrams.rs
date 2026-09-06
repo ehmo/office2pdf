@@ -11,6 +11,8 @@ enum ChartVariant {
     LinePlot,
     /// Filled regions over a value axis, accumulated by series when stacked.
     AreaPlot,
+    /// Straight segments through points positioned on two numeric axes.
+    ScatterPlot,
     /// Circular plot whose wedges are each point's share of the total.
     PiePlot,
     /// One spoke per category radiating from a centre, each series a closed
@@ -38,6 +40,17 @@ fn chart_variant(chart: &Chart) -> ChartVariant {
         && chart.categories.len() >= 2
     {
         return ChartVariant::AreaPlot;
+    }
+    if matches!(chart.chart_type, ChartType::Scatter)
+        && chart.series.len() == 1
+        && chart.categories.len() >= 2
+        && chart.series[0].values.len() == chart.categories.len()
+        && chart
+            .categories
+            .iter()
+            .all(|value| value.parse::<f64>().is_ok_and(|value| value.is_finite()))
+    {
+        return ChartVariant::ScatterPlot;
     }
     // A radar needs a closed ring of spokes, so two categories cannot make one.
     if is_radar(chart)
@@ -85,6 +98,7 @@ fn chart_fits_on_one_page(chart: &Chart) -> bool {
         // many points they carry.
         ChartVariant::LinePlot
         | ChartVariant::AreaPlot
+        | ChartVariant::ScatterPlot
         | ChartVariant::PiePlot
         | ChartVariant::RadarPlot => return true,
         ChartVariant::BorderedTable => {
@@ -198,6 +212,7 @@ fn generate_chart_body(
         }
         ChartVariant::LinePlot => return generate_chart_line_plot(out, chart, frame),
         ChartVariant::AreaPlot => return generate_chart_line_plot(out, chart, frame),
+        ChartVariant::ScatterPlot => return generate_chart_line_plot(out, chart, frame),
         ChartVariant::PiePlot => return generate_chart_pie_plot(out, chart, frame),
         ChartVariant::RadarPlot => return generate_chart_radar_plot(out, chart, frame),
         ChartVariant::BorderedTable => {}
@@ -4489,10 +4504,30 @@ pub(super) fn stacked_series_boundaries(chart: &Chart) -> Vec<(Vec<f64>, Vec<f64
         .collect()
 }
 
-/// Render a line or area chart over a value axis, matching the native
+/// Automatic numeric-axis interval for values that may sit on either side of
+/// zero. Scatter x positions use this without mutating the chart's y-axis
+/// settings.
+fn automatic_numeric_scale(data_min: f64, data_max: f64) -> ValueScale {
+    let initial: (f64, f64) = nice_axis(data_max.max(0.0));
+    let (max, step): (f64, f64) = if data_min < 0.0 {
+        let top: f64 = if data_max > 0.0 { initial.0 } else { 0.0 };
+        let step: f64 = nice_axis(top - data_min).1;
+        ((top / step - 1e-9).ceil().max(0.0) * step, step)
+    } else {
+        initial
+    };
+    ValueScale {
+        min: automatic_axis_minimum(data_min, step),
+        max,
+        step,
+    }
+}
+
+/// Render a line, area, or numeric scatter chart over a value axis, matching the native
 /// Excel/PowerPoint composition (gridlines, tick labels, category axis,
 /// markers, legend). An area chart closes one filled region per series against
-/// its prior cumulative boundary; an ordinary line remains a bare polyline.
+/// its prior cumulative boundary; an ordinary line remains a bare polyline;
+/// and a scatter positions every point from its numeric x value.
 fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64, f64)>) {
     const PLOT_W: f64 = 320.0;
     const PLOT_H: f64 = 210.0;
@@ -4509,6 +4544,27 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
     let categories: usize = chart.categories.len();
     let series: &[crate::ir::ChartSeries] = &chart.series;
     let is_area: bool = matches!(chart.chart_type, ChartType::Area);
+    let is_scatter: bool = matches!(chart.chart_type, ChartType::Scatter);
+    let scatter_x_values: Vec<f64> = if is_scatter {
+        chart
+            .categories
+            .iter()
+            .filter_map(|value| value.parse::<f64>().ok())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let scatter_x_scale: Option<ValueScale> = is_scatter.then(|| {
+        let min: f64 = scatter_x_values
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let max: f64 = scatter_x_values
+            .iter()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        automatic_numeric_scale(min, max)
+    });
 
     let max_value: f64 = chart_auto_max_value(chart);
     // As in `generate_chart_axis`, the axis spans the interval the part states
@@ -4535,22 +4591,24 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         frame.map(|(width, height)| (width, (height - title_h).max(MIN_PLOT_PT)));
 
     let legend: LegendBox = LegendBox::new(chart.legend_position, LINE_LEGEND_ROW_H, LEGEND_W);
+    let (title_left, title_bottom) = axis_title_gutters(chart);
     // A framed chart fills its `<p:graphicFrame>`; a flowed one keeps the
     // intrinsic plot size (issue #548).
     let (plot_w, plot_h) = match frame {
         Some((frame_w, frame_h)) => (
-            (frame_w - (VALUE_GAP + GAP) - legend.left - legend.right).max(MIN_PLOT_PT),
-            (frame_h - CAT_GAP - legend.top - legend.bottom).max(MIN_PLOT_PT),
+            (frame_w - title_left - (VALUE_GAP + GAP) - legend.left - legend.right)
+                .max(MIN_PLOT_PT),
+            (frame_h - title_bottom - CAT_GAP - legend.top - legend.bottom).max(MIN_PLOT_PT),
         ),
         None => (PLOT_W, PLOT_H),
     };
-    let plot_x: f64 = legend.left + VALUE_GAP + GAP;
+    let plot_x: f64 = legend.left + title_left + VALUE_GAP + GAP;
     let plot_y: f64 = legend.top;
     let (total_w, total_h) = match frame {
         Some(extent) => extent,
         None => (
-            legend.left + VALUE_GAP + GAP + PLOT_W + legend.right,
-            legend.top + PLOT_H + CAT_GAP + legend.bottom,
+            legend.left + title_left + VALUE_GAP + GAP + PLOT_W + legend.right,
+            legend.top + PLOT_H + CAT_GAP + title_bottom + legend.bottom,
         ),
     };
     let wraps_title: bool = write_chart_area_start(
@@ -4591,7 +4649,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                     y - chart_label_box_h(chart_axis_text_pt(chart, &chart.value_axis_text_style))
                         / 2.0
                 ),
-                format_f64(VALUE_GAP),
+                format_f64(legend.left + title_left + VALUE_GAP),
                 format_f64(chart_label_box_h(chart_axis_text_pt(
                     chart,
                     &chart.value_axis_text_style
@@ -4608,11 +4666,16 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
 
     // A line chart centres points inside category bands (`between`). An area
     // chart puts the first and last points on the plot edges (`midCat`), so its
-    // filled regions span the complete plot. Preflight admits only the crossing
-    // mode this branch draws.
+    // filled regions span the complete plot. A scatter uses the fraction of its
+    // numeric x-axis interval. Preflight admits only the geometry this branch
+    // draws.
     let band_w: f64 = plot_w / categories.max(1) as f64;
     let point_x = |index: usize| -> f64 {
-        if is_area {
+        if let Some(x_scale) = scatter_x_scale {
+            plot_x
+                + x_scale.fraction(scatter_x_values.get(index).copied().unwrap_or(x_scale.min))
+                    * plot_w
+        } else if is_area {
             plot_x + index as f64 * plot_w / (categories - 1).max(1) as f64
         } else {
             plot_x + (index as f64 + 0.5) * band_w
@@ -4623,10 +4686,28 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
     // puts it (issue #1184).
     let category_axis_y: f64 = plot_y + (1.0 - scale.zero_fraction()) * plot_h;
 
-    // Category axis labels.
+    // Category or numeric x-axis labels.
     if category_axis_drawn {
-        for (index, category) in chart.categories.iter().enumerate() {
-            let x: f64 = point_x(index);
+        let labels: Vec<(f64, String)> = if let Some(x_scale) = scatter_x_scale {
+            x_scale
+                .ticks()
+                .into_iter()
+                .map(|tick| {
+                    (
+                        plot_x + x_scale.fraction(tick) * plot_w,
+                        chart_value_label_formatted(tick, None),
+                    )
+                })
+                .collect()
+        } else {
+            chart
+                .categories
+                .iter()
+                .enumerate()
+                .map(|(index, category)| (point_x(index), category.clone()))
+                .collect()
+        };
+        for (x, label) in labels {
             let _ = writeln!(
                 out,
                 "#place(top + left, dx: {}pt, dy: {}pt, box(width: 24pt)[#align(center)[#text(size: {}pt{})[{}]]])",
@@ -4634,7 +4715,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 format_f64(plot_y + plot_h + 3.0),
                 format_f64(chart_axis_text_pt(chart, &chart.category_axis_text_style)),
                 chart_axis_text_attrs(chart, &chart.category_axis_text_style),
-                escape_typst(category)
+                escape_typst(&label)
             );
         }
     }
@@ -4681,7 +4762,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             );
         }
         // Point markers: the symbol the series names, else the shape cycle.
-        for (x, y) in &tops {
+        for (index, (x, y)) in tops.iter().enumerate() {
             write_series_marker(
                 out,
                 s_index,
@@ -4691,6 +4772,26 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 *y,
                 &color,
             );
+            if is_scatter
+                && let Some(label) =
+                    data_label_text(chart, s, index, s.values.iter().copied().sum())
+            {
+                let label_pt: f64 = data_label_text_pt(chart, &s.data_labels);
+                let label_w: f64 = 40.0;
+                let label_h: f64 = data_label_line_h(chart, &s.data_labels);
+                let marker_radius: f64 = s.marker_size_pt.unwrap_or(SERIES_MARKER_SIZE_PT) / 2.0;
+                let _ = writeln!(
+                    out,
+                    "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
+                    format_f64(*x - label_w / 2.0),
+                    format_f64(*y - marker_radius - label_h - 2.0),
+                    format_f64(label_w),
+                    format_f64(label_h),
+                    format_f64(label_pt),
+                    chart_data_label_attrs(chart, &s.data_labels),
+                    escape_typst(&label)
+                );
+            }
         }
     }
 
@@ -4720,7 +4821,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         }
     }
     // Line charts tick every category-band boundary. Area charts tick the
-    // `midCat` points themselves, including both plot edges.
+    // `midCat` points themselves. Scatter ticks its numeric x-axis units.
     if categories > 0
         && category_axis_drawn
         && let Some(reach) = tick_reach(
@@ -4728,7 +4829,13 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             chart_axis_text_pt(chart, &chart.category_axis_text_style),
         )
     {
-        let tick_xs: Vec<f64> = if is_area {
+        let tick_xs: Vec<f64> = if let Some(x_scale) = scatter_x_scale {
+            x_scale
+                .ticks()
+                .into_iter()
+                .map(|tick| plot_x + x_scale.fraction(tick) * plot_w)
+                .collect()
+        } else if is_area {
             (0..categories).map(point_x).collect()
         } else {
             (0..=categories)
@@ -4740,6 +4847,39 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 write_tick_under_plot(out, x, category_axis_y, reach, stroke);
             }
         }
+    }
+
+    // Axis titles occupy the same physical bands as bar and column titles:
+    // the value title down the left edge and the category or numeric x title
+    // below the tick labels.
+    let (left_axis_title, bottom_axis_title) = physical_axis_titles(chart);
+    if let Some((title, style)) = left_axis_title {
+        let title_h: f64 = chart_axis_title_band_h(chart, style);
+        let _ = writeln!(
+            out,
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: {}pt{})[{}]]]])",
+            format_f64(legend.left),
+            format_f64(plot_y),
+            format_f64(title_h),
+            format_f64(plot_h),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
+            escape_typst(title)
+        );
+    }
+    if let Some((title, style)) = bottom_axis_title {
+        let title_h: f64 = chart_axis_title_band_h(chart, style);
+        let _ = writeln!(
+            out,
+            "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
+            format_f64(plot_x),
+            format_f64(plot_y + plot_h + CAT_GAP),
+            format_f64(plot_w),
+            format_f64(title_h),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
+            escape_typst(title)
+        );
     }
 
     // Legend on the edge `<c:legendPos>` asks for — none when the chart
@@ -4773,7 +4913,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 plot_x - (VALUE_GAP + GAP),
                 plot_y,
                 VALUE_GAP + GAP + plot_w,
-                plot_h + CAT_GAP,
+                plot_h + CAT_GAP + title_bottom,
             ),
             LegendEntryLayout {
                 row_h: LINE_LEGEND_ROW_H,

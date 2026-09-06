@@ -69,7 +69,7 @@ fn make_bar_chart_xml() -> String {
 fn test_xlsx_with_chart_embeds_in_table_page() {
     let data = build_xlsx_with_chart(&[("A1", "Hello")], &make_bar_chart_xml());
     let parser = XlsxParser;
-    let (doc, _warnings) = parser.parse(&data, &ConvertOptions::default()).unwrap();
+    let (doc, warnings) = parser.parse(&data, &ConvertOptions::default()).unwrap();
 
     assert_eq!(
         doc.pages.len(),
@@ -86,6 +86,14 @@ fn test_xlsx_with_chart_embeds_in_table_page() {
     assert_eq!(chart.title.as_deref(), Some("Sales"));
     assert_eq!(chart.categories, vec!["Q1", "Q2"]);
     assert_eq!(chart.series[0].values, vec![100.0, 200.0]);
+    assert!(
+        !warnings.iter().any(|warning| matches!(
+            warning,
+            ConvertWarning::FallbackUsed { from, to, .. }
+                if from.starts_with("chart (") && to == "data table"
+        )),
+        "a plotted chart must not claim it fell back: {warnings:?}"
+    );
 }
 
 #[test]

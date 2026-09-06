@@ -654,6 +654,63 @@ fn anchored_chart(
     }
 }
 
+/// Whether the chart renderer has to use its bordered data-table fallback.
+///
+/// XLSX parsing used to report this warning for every chart, including the
+/// plotted bar, line, area, pie, radar, and scatter families. Keep the warning
+/// only for the same shapes the renderer actually sends to the table path.
+fn chart_uses_data_table_fallback(chart: &crate::ir::Chart) -> bool {
+    use crate::ir::ChartType;
+
+    match &chart.chart_type {
+        ChartType::Bar | ChartType::Column => {
+            chart.series.is_empty() || chart.categories.is_empty()
+        }
+        ChartType::Line | ChartType::Area => chart.series.is_empty() || chart.categories.len() < 2,
+        ChartType::Scatter => {
+            chart.series.len() != 1
+                || chart.categories.len() < 2
+                || chart.series[0].values.len() != chart.categories.len()
+                || !chart
+                    .categories
+                    .iter()
+                    .all(|value| value.parse::<f64>().is_ok_and(|value| value.is_finite()))
+        }
+        ChartType::Pie | ChartType::Doughnut => !chart
+            .series
+            .first()
+            .is_some_and(|series| series.values.iter().any(|value| *value > 0.0)),
+        ChartType::Other(kind) if kind == crate::ir::RADAR_CHART_LABEL => {
+            chart.series.is_empty()
+                || chart.categories.len() < 3
+                || !chart
+                    .series
+                    .iter()
+                    .any(|series| series.values.iter().any(|value| *value > 0.0))
+        }
+        ChartType::Other(_) => true,
+    }
+}
+
+fn warn_for_chart_fallbacks(charts: &[crate::ir::SheetChart], warnings: &mut Vec<ConvertWarning>) {
+    for sheet_chart in charts
+        .iter()
+        .filter(|sheet_chart| chart_uses_data_table_fallback(&sheet_chart.chart))
+    {
+        let title = sheet_chart
+            .chart
+            .title
+            .as_deref()
+            .unwrap_or("untitled")
+            .to_string();
+        warnings.push(ConvertWarning::FallbackUsed {
+            format: "XLSX".to_string(),
+            from: format!("chart ({title})"),
+            to: "data table".to_string(),
+        });
+    }
+}
+
 /// The one page a chartsheet prints: its chart alone, seated inside the
 /// printable area.
 ///
@@ -879,19 +936,7 @@ impl XlsxParser {
                 .into_iter()
                 .map(|anchor| anchored_chart(anchor, sheet, &ctx))
                 .collect();
-            for sheet_chart in &sheet_charts {
-                let title = sheet_chart
-                    .chart
-                    .title
-                    .as_deref()
-                    .unwrap_or("untitled")
-                    .to_string();
-                warnings.push(ConvertWarning::FallbackUsed {
-                    format: "XLSX".to_string(),
-                    from: format!("chart ({title})"),
-                    to: "data table".to_string(),
-                });
-            }
+            warn_for_chart_fallbacks(&sheet_charts, &mut warnings);
             sheet_charts.sort_by_key(|sheet_chart| sheet_chart.anchor_row);
             let mut sheet_images: Vec<crate::ir::SheetImage> = image_map
                 .remove(&sheet_name)
@@ -1249,19 +1294,7 @@ impl Parser for XlsxParser {
                 .into_iter()
                 .map(|anchor| anchored_chart(anchor, sheet, &ctx))
                 .collect();
-            for sheet_chart in &sheet_charts {
-                let title = sheet_chart
-                    .chart
-                    .title
-                    .as_deref()
-                    .unwrap_or("untitled")
-                    .to_string();
-                warnings.push(ConvertWarning::FallbackUsed {
-                    format: "XLSX".to_string(),
-                    from: format!("chart ({title})"),
-                    to: "data table".to_string(),
-                });
-            }
+            warn_for_chart_fallbacks(&sheet_charts, &mut warnings);
             // Sort by anchor row
             sheet_charts.sort_by_key(|sheet_chart| sheet_chart.anchor_row);
             let mut sheet_images: Vec<crate::ir::SheetImage> = image_map
