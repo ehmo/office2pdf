@@ -1207,6 +1207,7 @@ fn every_legend_family_uses_the_legends_own_run_properties() {
         letter_spacing_hundredths: Some(125),
         pair_kerning: None,
         color: Some(Color::new(0xC0, 0x2A, 0x7A)),
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     for (chart_type, label) in [
@@ -1604,6 +1605,31 @@ fn axis_titles_use_their_own_run_properties() {
     assert!(revenue.contains("weight: \"bold\""));
     assert!(quarter.contains("font:") && quarter.contains("Arial"));
     assert!(revenue.contains("font:") && revenue.contains("Aptos"));
+}
+
+#[test]
+fn horizontal_bars_put_the_category_title_on_the_left() {
+    let mut chart = axis_titled_chart(Some("Quarter"), Some("Revenue"));
+    chart.chart_type = ChartType::Bar;
+
+    let source = chart_source(chart);
+    let quarter = source
+        .lines()
+        .find(|line| line.contains("[Quarter]"))
+        .expect("the category title is emitted");
+    let revenue = source
+        .lines()
+        .find(|line| line.contains("[Revenue]"))
+        .expect("the value title is emitted");
+
+    assert!(
+        quarter.contains("rotate(-90deg"),
+        "the physical vertical-axis title must run down the left edge: {quarter}"
+    );
+    assert!(
+        !revenue.contains("rotate("),
+        "the physical horizontal-axis title must stay flat: {revenue}"
+    );
 }
 
 #[test]
@@ -3771,6 +3797,7 @@ fn sized_bar_chart(size_pt: f64) -> Chart {
         letter_spacing_hundredths: None,
         pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     chart
@@ -3829,6 +3856,7 @@ fn title_run_style(
         letter_spacing_hundredths: None,
         pair_kerning: None,
         color,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     }
 }
@@ -4070,6 +4098,7 @@ fn category_labels_take_the_axis_weight() {
         letter_spacing_hundredths: None,
         pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     let source: String = chart_source(chart);
@@ -4089,6 +4118,7 @@ fn an_axis_size_overrides_the_chart_space_size_for_that_axis_only() {
         letter_spacing_hundredths: None,
         pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     let source: String = chart_source(chart);
@@ -4199,6 +4229,7 @@ fn bar_chart_at(size_pt: Option<f64>, categories: &[&str]) -> Chart {
         letter_spacing_hundredths: None,
         pair_kerning: None,
         color: None,
+        rotation_degrees: None,
         ellipsis_overflow: false,
     };
     chart

@@ -2836,6 +2836,26 @@ mod tests {
     }
 
     #[test]
+    fn horizontal_bar_titles_follow_their_physical_axes() {
+        let chart = |category_rotation: &str, value_rotation: &str| {
+            format!(
+                r#"<c:chartSpace xmlns:c="urn:c" xmlns:a="urn:a"><c:chart><c:plotArea><c:barChart><c:barDir val="bar"/><c:ser><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>10</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart><c:catAx><c:axPos val="l"/><c:title><c:tx><c:rich><a:bodyPr rot="{category_rotation}"/><a:p><a:r><a:t>Quarter</a:t></a:r></a:p></c:rich></c:tx></c:title></c:catAx><c:valAx><c:axPos val="b"/><c:crossBetween val="between"/><c:title><c:tx><c:rich><a:bodyPr rot="{value_rotation}"/><a:p><a:r><a:t>Revenue</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx></c:plotArea></c:chart></c:chartSpace>"#
+            )
+        };
+
+        validate_chart_xml(&chart("-5400000", "0"), "Budget")
+            .expect("the category title is vertical and the value title is horizontal");
+
+        for xml in [chart("0", "0"), chart("-5400000", "-5400000")] {
+            assert_unsupported(
+                validate_chart_xml(&xml, "Budget")
+                    .expect_err("a title rotation on the wrong physical axis must fail closed"),
+                "unsupported chart detail text orientation on sheet: Budget",
+            );
+        }
+    }
+
+    #[test]
     fn chart_preflight_rejects_collapsed_cache_gaps_and_unmodelled_axes() {
         let gapped = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="2"><c:v>C</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart><c:catAx/><c:valAx/></c:plotArea></c:chart></c:chartSpace>"#;
         assert_unsupported(
@@ -4334,7 +4354,9 @@ fn chart_text_attributes_supported(
         .any(|ancestor| matches!(ancestor.as_slice(), b"catAx" | b"valAx"))
         && ancestors.iter().any(|ancestor| ancestor == b"txPr")
         && !ancestors.iter().any(|ancestor| ancestor == b"title");
-    let value_axis_title = ancestors.iter().any(|ancestor| ancestor == b"valAx")
+    let axis_title = ancestors
+        .iter()
+        .any(|ancestor| matches!(ancestor.as_slice(), b"catAx" | b"valAx"))
         && ancestors.iter().any(|ancestor| ancestor == b"title")
         && ancestors.iter().any(|ancestor| ancestor == b"rich");
 
@@ -4362,7 +4384,7 @@ fn chart_text_attributes_supported(
                 b"rot" => {
                     value == "0"
                         || (value == "-60000000" && axis_labels)
-                        || (value == "-5400000" && value_axis_title)
+                        || (value == "-5400000" && axis_title)
                 }
                 b"spcFirstLastPara" | b"anchorCtr" => {
                     matches!(value, "1" | "true" | "on")
@@ -5554,7 +5576,36 @@ fn validate_chart_xml_with_hidden_sources(
         ChartType::Bar => ("l", "b"),
         _ => ("b", "l"),
     };
+    let title_rotation_matches =
+        |title: &Option<String>, style: &crate::ir::ChartTextStyle, expected: f64| {
+            title.is_none()
+                || style
+                    .rotation_degrees
+                    .is_none_or(|rotation| (rotation - expected).abs() < f64::EPSILON)
+        };
+    let axis_title_orientation_mismatch = if matches!(chart.chart_type, ChartType::Bar) {
+        !title_rotation_matches(
+            &chart.category_axis_title,
+            &chart.category_axis_title_text_style,
+            -90.0,
+        ) || !title_rotation_matches(
+            &chart.value_axis_title,
+            &chart.value_axis_title_text_style,
+            0.0,
+        )
+    } else {
+        !title_rotation_matches(
+            &chart.category_axis_title,
+            &chart.category_axis_title_text_style,
+            0.0,
+        ) || !title_rotation_matches(
+            &chart.value_axis_title,
+            &chart.value_axis_title_text_style,
+            -90.0,
+        )
+    };
     if line_series_marker_mismatch
+        || axis_title_orientation_mismatch
         || scan
             .cat_axis_positions
             .iter()
@@ -5567,6 +5618,8 @@ fn validate_chart_xml_with_hidden_sources(
     {
         let detail = if line_series_marker_mismatch {
             "line marker visibility"
+        } else if axis_title_orientation_mismatch {
+            "text orientation"
         } else if scan
             .cat_axis_positions
             .iter()

@@ -1039,6 +1039,14 @@ fn test_axis_titles_are_read() {
 
     assert_eq!(chart.category_axis_title.as_deref(), Some("계층"));
     assert_eq!(chart.value_axis_title.as_deref(), Some("LOC"));
+    assert_eq!(
+        chart.category_axis_title_text_style.rotation_degrees,
+        Some(0.0)
+    );
+    assert_eq!(
+        chart.value_axis_title_text_style.rotation_degrees,
+        Some(-90.0)
+    );
 }
 
 #[test]

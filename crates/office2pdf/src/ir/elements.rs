@@ -540,6 +540,12 @@ pub struct ChartTextStyle {
     pub pair_kerning: Option<PairKerning>,
     /// `a:defRPr/a:solidFill` — the colour the runs are set in (issue #916).
     pub color: Option<Color>,
+    /// `a:bodyPr@rot`, converted from DrawingML's 1/60000-degree unit.
+    ///
+    /// Axis-title placement needs to retain an explicit quarter turn so XLSX
+    /// preflight can prove that the physical vertical title is the one being
+    /// rotated. `None` means the file left orientation to the application.
+    pub rotation_degrees: Option<f64>,
     /// `a:bodyPr@vertOverflow="ellipsis"`. This body property is kept beside
     /// the run properties because every chart text scope already owns one
     /// `ChartTextStyle` (issue #1012).

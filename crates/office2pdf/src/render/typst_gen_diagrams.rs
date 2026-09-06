@@ -2506,22 +2506,38 @@ fn axis_label_gutters(chart: &Chart, frame: Option<(f64, f64)>) -> (f64, f64) {
 
 /// Space the axis titles reserve, as `(left, bottom)` in points.
 ///
-/// The value-axis title runs a quarter turn anticlockwise down the left edge,
-/// so it costs width; the category-axis title sits flat under the tick labels
-/// and costs height (issue #552).
+/// The physical vertical-axis title runs a quarter turn anticlockwise down the
+/// left edge, so it costs width; the physical horizontal-axis title sits flat
+/// under the tick labels and costs height (issue #552). Horizontal bars swap
+/// the semantic category and value axes without swapping those physical bands.
 fn axis_title_gutters(chart: &Chart) -> (f64, f64) {
+    let (left, bottom) = physical_axis_titles(chart);
     (
-        if chart.value_axis_title.is_some() {
-            chart_axis_title_band_h(chart, &chart.value_axis_title_text_style)
-        } else {
-            0.0
-        },
-        if chart.category_axis_title.is_some() {
-            chart_axis_title_band_h(chart, &chart.category_axis_title_text_style)
-        } else {
-            0.0
-        },
+        left.map_or(0.0, |(_, style)| chart_axis_title_band_h(chart, style)),
+        bottom.map_or(0.0, |(_, style)| chart_axis_title_band_h(chart, style)),
     )
+}
+
+/// Axis titles by physical placement: `(left, bottom)`.
+fn physical_axis_titles(
+    chart: &Chart,
+) -> (
+    Option<(&str, &crate::ir::ChartTextStyle)>,
+    Option<(&str, &crate::ir::ChartTextStyle)>,
+) {
+    let category = chart
+        .category_axis_title
+        .as_deref()
+        .map(|title| (title, &chart.category_axis_title_text_style));
+    let value = chart
+        .value_axis_title
+        .as_deref()
+        .map(|title| (title, &chart.value_axis_title_text_style));
+    if matches!(chart.chart_type, ChartType::Bar) {
+        (category, value)
+    } else {
+        (value, category)
+    }
 }
 
 /// Thickness of an axis-title band: the resolved line size plus the six-point
@@ -4177,9 +4193,11 @@ fn generate_chart_axis(
         }
     }
 
-    // Axis titles, in the bands `axis_title_gutters` reserved for them.
-    if let Some(title) = chart.value_axis_title.as_deref() {
-        let title_h = chart_axis_title_band_h(chart, &chart.value_axis_title_text_style);
+    // Axis titles, in the physical bands `axis_title_gutters` reserved for
+    // them. Horizontal bars put categories on the left and values below.
+    let (left_axis_title, bottom_axis_title) = physical_axis_titles(chart);
+    if let Some((title, style)) = left_axis_title {
+        let title_h = chart_axis_title_band_h(chart, style);
         let _ = writeln!(
             out,
             "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#rotate(-90deg, reflow: false)[#text(size: {}pt{})[{}]]]])",
@@ -4187,17 +4205,14 @@ fn generate_chart_axis(
             format_f64(plot_y),
             format_f64(title_h),
             format_f64(plot_h),
-            format_f64(chart_axis_title_text_pt(
-                chart,
-                &chart.value_axis_title_text_style
-            )),
-            chart_axis_title_text_attrs(chart, &chart.value_axis_title_text_style),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
             escape_typst(title)
         );
     }
-    if let Some(title) = chart.category_axis_title.as_deref() {
+    if let Some((title, style)) = bottom_axis_title {
         let (_, gutter_h) = axis_label_gutters(chart, frame);
-        let title_h = chart_axis_title_band_h(chart, &chart.category_axis_title_text_style);
+        let title_h = chart_axis_title_band_h(chart, style);
         let _ = writeln!(
             out,
             "#place(top + left, dx: {}pt, dy: {}pt, box(width: {}pt, height: {}pt)[#align(center + horizon)[#text(size: {}pt{})[{}]]])",
@@ -4205,11 +4220,8 @@ fn generate_chart_axis(
             format_f64(plot_y + plot_h + 2.0 + gutter_h - title_h),
             format_f64(plot_w),
             format_f64(title_h),
-            format_f64(chart_axis_title_text_pt(
-                chart,
-                &chart.category_axis_title_text_style
-            )),
-            chart_axis_title_text_attrs(chart, &chart.category_axis_title_text_style),
+            format_f64(chart_axis_title_text_pt(chart, style)),
+            chart_axis_title_text_attrs(chart, style),
             escape_typst(title)
         );
     }

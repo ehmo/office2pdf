@@ -566,6 +566,10 @@ fn parse_chart_text_properties(
             Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
                 match e.local_name().as_ref() {
                     b"bodyPr" => {
+                        style.rotation_degrees = xml_util::get_attr_str(e, b"rot")
+                            .and_then(|value| value.parse::<f64>().ok())
+                            .map(|value| value / 60_000.0)
+                            .filter(|value| value.is_finite());
                         ellipsis = xml_util::get_attr_str(e, b"vertOverflow")
                             .is_some_and(|value| value == "ellipsis");
                     }
@@ -1054,6 +1058,10 @@ fn parse_chart_title(
                             .filter(|face| !face.trim().is_empty());
                     }
                 } else if in_rich && local.as_ref() == b"bodyPr" {
+                    rich_default_style.rotation_degrees = xml_util::get_attr_str(e, b"rot")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .map(|value| value / 60_000.0)
+                        .filter(|value| value.is_finite());
                     rich_default_style.ellipsis_overflow =
                         xml_util::get_attr_str(e, b"vertOverflow")
                             .is_some_and(|value| value == "ellipsis");
@@ -1088,6 +1096,10 @@ fn parse_chart_title(
                         target.color = drawingml::parse_color_from_empty(e, scheme).color;
                     }
                 } else if in_rich && local.as_ref() == b"bodyPr" {
+                    rich_default_style.rotation_degrees = xml_util::get_attr_str(e, b"rot")
+                        .and_then(|value| value.parse::<f64>().ok())
+                        .map(|value| value / 60_000.0)
+                        .filter(|value| value.is_finite());
                     rich_default_style.ellipsis_overflow =
                         xml_util::get_attr_str(e, b"vertOverflow")
                             .is_some_and(|value| value == "ellipsis");
@@ -1144,6 +1156,9 @@ fn parse_chart_title(
         .pair_kerning
         .or(rich_default_style.pair_kerning);
     rich_default_style.color = rich_run_style.color.or(rich_default_style.color);
+    rich_default_style.rotation_degrees = rich_run_style
+        .rotation_degrees
+        .or(rich_default_style.rotation_degrees);
     rich_default_style.ellipsis_overflow |= rich_run_style.ellipsis_overflow;
     style.font_family = rich_default_style.font_family.or(style.font_family);
     style.size_pt = rich_default_style.size_pt.or(style.size_pt);
@@ -1153,6 +1168,9 @@ fn parse_chart_title(
         .or(style.letter_spacing_hundredths);
     style.pair_kerning = rich_default_style.pair_kerning.or(style.pair_kerning);
     style.color = rich_default_style.color.or(style.color);
+    style.rotation_degrees = rich_default_style
+        .rotation_degrees
+        .or(style.rotation_degrees);
     style.ellipsis_overflow |= rich_default_style.ellipsis_overflow;
     (title, names_own_text, style, layout)
 }
