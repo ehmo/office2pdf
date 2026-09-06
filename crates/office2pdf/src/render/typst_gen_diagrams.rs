@@ -7,8 +7,10 @@ use crate::render::font_subst;
 enum ChartVariant {
     /// Axis-scaled bar/column plot with gridlines, tick labels, and a legend.
     AxisPlot,
-    /// Polyline plot over a value axis, for line and area charts.
+    /// Polyline plot over a value axis.
     LinePlot,
+    /// Filled regions over a value axis, accumulated by series when stacked.
+    AreaPlot,
     /// Circular plot whose wedges are each point's share of the total.
     PiePlot,
     /// One spoke per category radiating from a centre, each series a closed
@@ -25,11 +27,17 @@ fn chart_variant(chart: &Chart) -> ChartVariant {
     {
         return ChartVariant::AxisPlot;
     }
-    if matches!(chart.chart_type, ChartType::Line | ChartType::Area)
+    if matches!(chart.chart_type, ChartType::Line)
         && !chart.series.is_empty()
         && chart.categories.len() >= 2
     {
         return ChartVariant::LinePlot;
+    }
+    if matches!(chart.chart_type, ChartType::Area)
+        && !chart.series.is_empty()
+        && chart.categories.len() >= 2
+    {
+        return ChartVariant::AreaPlot;
     }
     // A radar needs a closed ring of spokes, so two categories cannot make one.
     if is_radar(chart)
@@ -75,7 +83,10 @@ fn chart_fits_on_one_page(chart: &Chart) -> bool {
         ChartVariant::AxisPlot => chart_axis_extent(chart).1 + 24.0,
         // The polyline, pie and radar plots are a fixed size regardless of how
         // many points they carry.
-        ChartVariant::LinePlot | ChartVariant::PiePlot | ChartVariant::RadarPlot => return true,
+        ChartVariant::LinePlot
+        | ChartVariant::AreaPlot
+        | ChartVariant::PiePlot
+        | ChartVariant::RadarPlot => return true,
         ChartVariant::BorderedTable => {
             BORDERED_TABLE_CHROME_PT + chart.categories.len() as f64 * BORDERED_TABLE_ROW_PT
         }
@@ -85,10 +96,11 @@ fn chart_fits_on_one_page(chart: &Chart) -> bool {
 
 /// Generate Typst markup for a chart.
 ///
-/// Bar and column charts render as an axis-scaled plot; line and area charts
-/// as a polyline plot over the same axis; pie and doughnut charts as a wedge
-/// plot; and a radar carrying at least three categories and one positive value
-/// as a spoke-and-polygon plot. What is left — bubble, stock, surface, and a
+/// Bar and column charts render as an axis-scaled plot; line charts as a
+/// polyline; area charts as filled regions over the same value axis; pie and
+/// doughnut charts as a wedge plot; and a radar carrying at least three
+/// categories and one positive value as a spoke-and-polygon plot. What is left
+/// — bubble, stock, surface, and a
 /// radar too small or too flat to draw — falls back to a bordered box holding
 /// the title, a type label, and a data table.
 ///
@@ -185,6 +197,7 @@ fn generate_chart_body(
             return generate_chart_axis(out, chart, frame, sheet_frame_top_pt);
         }
         ChartVariant::LinePlot => return generate_chart_line_plot(out, chart, frame),
+        ChartVariant::AreaPlot => return generate_chart_line_plot(out, chart, frame),
         ChartVariant::PiePlot => return generate_chart_pie_plot(out, chart, frame),
         ChartVariant::RadarPlot => return generate_chart_radar_plot(out, chart, frame),
         ChartVariant::BorderedTable => {}
@@ -1870,6 +1883,13 @@ const MAX_AXIS_TICKS: usize = 1000;
 /// An end the part leaves out keeps the automatic one.
 fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
     let data_min: f64 = chart_auto_min_value(chart);
+    let automatic_minimum = |step: f64| {
+        if matches!(chart.grouping, ChartGrouping::PercentStacked) {
+            data_min
+        } else {
+            automatic_axis_minimum(data_min, step)
+        }
+    };
     // An axis reaching below zero has to count out its whole span rather than
     // the positive half of it: a chart whose data is entirely negative has an
     // automatic maximum of zero, and a step chosen from that would tick the
@@ -1894,7 +1914,7 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
         .value_axis_major_unit
         .filter(|unit| unit.is_finite() && *unit > 0.0);
     let (stated_min, stated_max) = (stated(chart.value_axis_min), stated(chart.value_axis_max));
-    let min: f64 = stated_min.unwrap_or_else(|| automatic_axis_minimum(data_min, auto_step));
+    let min: f64 = stated_min.unwrap_or_else(|| automatic_minimum(auto_step));
     let max: f64 = stated_max.unwrap_or(auto_max);
 
     // A stated interval carries its own automatic unit: Excel counts out the
@@ -1907,14 +1927,14 @@ fn chart_value_scale(chart: &Chart, auto_axis: (f64, f64)) -> ValueScale {
         (None, None) => auto_step,
     };
     // Re-seated on the final unit so an automatic minimum still lands on one.
-    let min: f64 = stated_min.unwrap_or_else(|| automatic_axis_minimum(data_min, step));
+    let min: f64 = stated_min.unwrap_or_else(|| automatic_minimum(step));
     if max > min {
         return ValueScale { min, max, step };
     }
     // A part stating a maximum at or below its minimum describes no interval
     // at all, so the automatic scale is the only thing left to draw against.
     ValueScale {
-        min: automatic_axis_minimum(data_min, auto_step),
+        min: automatic_minimum(auto_step),
         max: auto_max,
         step: auto_step,
     }
@@ -1956,9 +1976,15 @@ fn chart_auto_min_value(chart: &Chart) -> f64 {
         .copied()
         .fold(0.0_f64, f64::min);
     match chart.grouping {
-        // Every stack is rescaled to fill the axis, so the scale is the
-        // percentage itself and has no negative end.
-        ChartGrouping::PercentStacked => 0.0,
+        // Each side of a percentage stack is rescaled independently. A chart
+        // carrying any negative value therefore needs the full negative side.
+        ChartGrouping::PercentStacked => chart
+            .series
+            .iter()
+            .flat_map(|series| series.values.iter())
+            .any(|value| *value < 0.0)
+            .then_some(-100.0)
+            .unwrap_or(0.0),
         ChartGrouping::Stacked => (0..chart.categories.len())
             .map(|index| {
                 chart
@@ -2010,7 +2036,13 @@ fn chart_auto_max_value(chart: &Chart) -> f64 {
             .map(|(series, _)| series)
     };
     match chart.grouping {
-        ChartGrouping::PercentStacked => 100.0,
+        ChartGrouping::PercentStacked => chart
+            .series
+            .iter()
+            .flat_map(|series| series.values.iter())
+            .any(|value| *value > 0.0)
+            .then_some(100.0)
+            .unwrap_or(0.0),
         ChartGrouping::Stacked => (0..chart.categories.len())
             .map(|index| category_total(bar_series(), index))
             .fold(overlay_max, f64::max),
@@ -4370,9 +4402,97 @@ fn generate_chart_bar(out: &mut String, chart: &Chart) {
     }
 }
 
-/// Render a line/area chart as a polyline plot over a value axis, matching
-/// the native Excel/PowerPoint composition (gridlines, tick labels, category
-/// axis, markers, legend).
+/// Each series' lower and upper value boundary at every category.
+///
+/// Stacked charts accumulate positive and negative values away from zero on
+/// separate sides. Percent stacks normalize each side independently. A
+/// standard chart reports zero as every lower boundary, so the same result can
+/// feed both bare polylines and filled areas.
+pub(super) fn stacked_series_boundaries(chart: &Chart) -> Vec<(Vec<f64>, Vec<f64>)> {
+    let categories = chart.categories.len();
+    let stacked = matches!(
+        chart.grouping,
+        ChartGrouping::Stacked | ChartGrouping::PercentStacked
+    );
+    let percent = matches!(chart.grouping, ChartGrouping::PercentStacked);
+    let positive_totals: Vec<f64> = (0..categories)
+        .map(|index| {
+            chart
+                .series
+                .iter()
+                .filter_map(|item| item.values.get(index))
+                .filter(|value| **value > 0.0)
+                .sum()
+        })
+        .collect();
+    let negative_totals: Vec<f64> = (0..categories)
+        .map(|index| {
+            chart
+                .series
+                .iter()
+                .filter_map(|item| item.values.get(index))
+                .filter(|value| **value < 0.0)
+                .map(|value| value.abs())
+                .sum()
+        })
+        .collect();
+    let mut positive_base = vec![0.0; categories];
+    let mut negative_base = vec![0.0; categories];
+
+    chart
+        .series
+        .iter()
+        .map(|series| {
+            let points = series.values.len().min(categories);
+            let mut bottoms = Vec::with_capacity(points);
+            let mut tops = Vec::with_capacity(points);
+            for (index, raw) in series.values.iter().copied().take(categories).enumerate() {
+                let value = if percent && raw > 0.0 {
+                    let total = positive_totals[index];
+                    if total == 0.0 {
+                        0.0
+                    } else {
+                        raw / total * 100.0
+                    }
+                } else if percent && raw < 0.0 {
+                    let total = negative_totals[index];
+                    if total == 0.0 {
+                        0.0
+                    } else {
+                        raw / total * 100.0
+                    }
+                } else {
+                    raw
+                };
+                let base = if stacked {
+                    if value < 0.0 {
+                        negative_base[index]
+                    } else {
+                        positive_base[index]
+                    }
+                } else {
+                    0.0
+                };
+                let top = base + value;
+                if stacked {
+                    if value < 0.0 {
+                        negative_base[index] = top;
+                    } else {
+                        positive_base[index] = top;
+                    }
+                }
+                bottoms.push(base);
+                tops.push(top);
+            }
+            (bottoms, tops)
+        })
+        .collect()
+}
+
+/// Render a line or area chart over a value axis, matching the native
+/// Excel/PowerPoint composition (gridlines, tick labels, category axis,
+/// markers, legend). An area chart closes one filled region per series against
+/// its prior cumulative boundary; an ordinary line remains a bare polyline.
 fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64, f64)>) {
     const PLOT_W: f64 = 320.0;
     const PLOT_H: f64 = 210.0;
@@ -4388,16 +4508,18 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
 
     let categories: usize = chart.categories.len();
     let series: &[crate::ir::ChartSeries] = &chart.series;
+    let is_area: bool = matches!(chart.chart_type, ChartType::Area);
 
-    let max_value: f64 = series
-        .iter()
-        .flat_map(|s| s.values.iter())
-        .copied()
-        .fold(0.0_f64, f64::max);
+    let max_value: f64 = chart_auto_max_value(chart);
     // As in `generate_chart_axis`, the axis spans the interval the part states
     // and only otherwise the automatic one, so a point below zero has a floor
     // to dip towards (issue #1184).
-    let scale: ValueScale = chart_value_scale(chart, nice_axis(max_value));
+    let auto_axis: (f64, f64) = if matches!(chart.grouping, ChartGrouping::PercentStacked) {
+        (100.0, 20.0)
+    } else {
+        nice_axis(max_value)
+    };
+    let scale: ValueScale = chart_value_scale(chart, auto_axis);
 
     // As in `generate_chart_axis`: the title takes a band from the content,
     // while the full chart-area outline stays around both (issue #1216).
@@ -4484,22 +4606,18 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         }
     }
 
-    // The category axis is split into one band per category, and both the point
-    // and its label sit at their band's centre — `<c:crossBetween val="between"/>`,
-    // which is what every category axis in the fixture corpus asks for and what
-    // the category tick marks below are the boundaries of. PowerPoint's own
-    // export of `tests/fixtures/pptx/line-chart.pptx` spaces its four points
-    // 90.91pt apart over a 363.65pt axis, the first of them half a band in
-    // (issue #672).
-    //
-    // TODO(crossBetween): the element itself is not parsed, so an axis asking
-    // for `midCat` — points on the boundaries, the series spanning the plot
-    // edge to edge — is laid out as `between` as well.
-    //
-    // `chart_variant` only routes a chart with two categories or more here, but
-    // the band width still has to be safe if that ever changes.
+    // A line chart centres points inside category bands (`between`). An area
+    // chart puts the first and last points on the plot edges (`midCat`), so its
+    // filled regions span the complete plot. Preflight admits only the crossing
+    // mode this branch draws.
     let band_w: f64 = plot_w / categories.max(1) as f64;
-    let point_x = |index: usize| -> f64 { plot_x + (index as f64 + 0.5) * band_w };
+    let point_x = |index: usize| -> f64 {
+        if is_area {
+            plot_x + index as f64 * plot_w / (categories - 1).max(1) as f64
+        } else {
+            plot_x + (index as f64 + 0.5) * band_w
+        }
+    };
     let point_y = |value: f64| -> f64 { plot_y + (1.0 - scale.fraction(value)) * plot_h };
     // The category axis stands on the value-zero line, wherever the interval
     // puts it (issue #1184).
@@ -4521,17 +4639,37 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
         }
     }
 
-    // Series polylines + markers.
+    // Series polylines or closed area regions, plus markers. Positive and
+    // negative values accumulate away from zero on separate sides, as Office
+    // stacks them; a standard area series closes against zero independently.
+    let boundaries = stacked_series_boundaries(chart);
     for (s_index, s) in series.iter().enumerate() {
         let color: String = series_color(s, s_index, 0, &chart.theme_accent_colors);
-        let points: Vec<(f64, f64)> = s
-            .values
+        let (bottom_values, top_values) = &boundaries[s_index];
+        let bottoms: Vec<(f64, f64)> = bottom_values
             .iter()
             .enumerate()
             .map(|(index, value)| (point_x(index), point_y(*value)))
             .collect();
-        if points.len() >= 2 {
-            let coords: String = points
+        let tops: Vec<(f64, f64)> = top_values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| (point_x(index), point_y(*value)))
+            .collect();
+        if is_area {
+            let coords: String = tops
+                .iter()
+                .chain(bottoms.iter().rev())
+                .map(|(x, y)| format!("({}pt, {}pt)", format_f64(*x), format_f64(*y)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let _ = writeln!(
+                out,
+                "#place(top + left, path(fill: {color}, stroke: {}pt + {color}, closed: true, {coords}))",
+                format_f64(series_line_pt(s))
+            );
+        } else if tops.len() >= 2 {
+            let coords: String = tops
                 .iter()
                 .map(|(x, y)| format!("({}pt, {}pt)", format_f64(*x), format_f64(*y)))
                 .collect::<Vec<_>>()
@@ -4543,7 +4681,7 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             );
         }
         // Point markers: the symbol the series names, else the shape cycle.
-        for (x, y) in &points {
+        for (x, y) in &tops {
             write_series_marker(
                 out,
                 s_index,
@@ -4581,8 +4719,8 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             }
         }
     }
-    // The boundaries of the bands `point_x` centres each category in, so every
-    // category label sits midway between two ticks.
+    // Line charts tick every category-band boundary. Area charts tick the
+    // `midCat` points themselves, including both plot edges.
     if categories > 0
         && category_axis_drawn
         && let Some(reach) = tick_reach(
@@ -4590,15 +4728,16 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
             chart_axis_text_pt(chart, &chart.category_axis_text_style),
         )
     {
-        for boundary in 0..=categories {
+        let tick_xs: Vec<f64> = if is_area {
+            (0..categories).map(point_x).collect()
+        } else {
+            (0..=categories)
+                .map(|boundary| plot_x + boundary as f64 * band_w)
+                .collect()
+        };
+        for x in tick_xs {
             if let Some(stroke) = category_stroke.as_deref() {
-                write_tick_under_plot(
-                    out,
-                    plot_x + boundary as f64 * band_w,
-                    category_axis_y,
-                    reach,
-                    stroke,
-                );
+                write_tick_under_plot(out, x, category_axis_y, reach, stroke);
             }
         }
     }
@@ -4645,7 +4784,15 @@ fn generate_chart_line_plot(out: &mut String, chart: &Chart, frame: Option<(f64,
                 horizontal_x_shift: 0.0,
             },
         );
-        let key: String = line_legend_key(s_index, s, &color);
+        let key: String = if is_area {
+            format!(
+                "#box(width: {}pt, height: {}pt, fill: {color})",
+                format_f64(LEGEND_KEY_LEN_PT),
+                format_f64(s.marker_size_pt.unwrap_or(SERIES_MARKER_SIZE_PT))
+            )
+        } else {
+            line_legend_key(s_index, s, &color)
+        };
         let _ = writeln!(
             out,
             "#place(top + left, dx: {}pt, dy: {}pt, box[{key}#h({}pt)#text(size: {}pt{})[{}]])",

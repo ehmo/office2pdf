@@ -2856,6 +2856,19 @@ mod tests {
     }
 
     #[test]
+    fn stacked_area_requires_the_mid_category_geometry_the_renderer_draws() {
+        let chart = r#"<c:chartSpace xmlns:c="urn:c"><c:chart><c:plotArea><c:areaChart><c:grouping val="stacked"/><c:ser><c:idx val="0"/><c:order val="0"/><c:marker><c:symbol val="circle"/><c:size val="6"/></c:marker><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>4</c:v></c:pt><c:pt idx="1"><c:v>8</c:v></c:pt></c:numLit></c:val></c:ser><c:ser><c:idx val="1"/><c:order val="1"/><c:marker><c:symbol val="diamond"/><c:size val="6"/></c:marker><c:cat><c:strLit><c:pt idx="0"><c:v>Q1</c:v></c:pt><c:pt idx="1"><c:v>Q2</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>6</c:v></c:pt><c:pt idx="1"><c:v>2</c:v></c:pt></c:numLit></c:val></c:ser></c:areaChart><c:catAx><c:axPos val="b"/></c:catAx><c:valAx><c:axPos val="l"/><c:crossBetween val="midCat"/></c:valAx></c:plotArea></c:chart></c:chartSpace>"#;
+
+        validate_chart_xml(chart, "Budget")
+            .expect("stacked area points and ticks use mid-category crossing");
+        assert_unsupported(
+            validate_chart_xml(&chart.replace("midCat", "between"), "Budget")
+                .expect_err("a crossing mode the area renderer does not draw must fail closed"),
+            "unsupported chart detail category crossing on sheet: Budget",
+        );
+    }
+
+    #[test]
     fn chart_preflight_rejects_collapsed_cache_gaps_and_unmodelled_axes() {
         let gapped = r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:ptCount val="3"/><c:pt idx="0"><c:v>A</c:v></c:pt><c:pt idx="2"><c:v>C</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:ptCount val="3"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="2"><c:v>3</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart><c:catAx/><c:valAx/></c:plotArea></c:chart></c:chartSpace>"#;
         assert_unsupported(
@@ -5604,6 +5617,11 @@ fn validate_chart_xml_with_hidden_sources(
             -90.0,
         )
     };
+    let category_crossing_mismatch = if matches!(chart.chart_type, ChartType::Area) {
+        scan.cross_between.iter().any(|value| value != "midCat")
+    } else {
+        scan.cross_between.iter().any(|value| value != "between")
+    };
     if line_series_marker_mismatch
         || axis_title_orientation_mismatch
         || scan
@@ -5614,7 +5632,7 @@ fn validate_chart_xml_with_hidden_sources(
             .val_axis_positions
             .iter()
             .any(|position| position != expected_val_axis)
-        || scan.cross_between.iter().any(|value| value != "between")
+        || category_crossing_mismatch
     {
         let detail = if line_series_marker_mismatch {
             "line marker visibility"

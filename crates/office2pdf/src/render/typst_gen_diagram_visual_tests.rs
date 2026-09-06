@@ -3233,6 +3233,116 @@ fn line_chart_with_markers(symbols: [Option<MarkerSymbol>; 2]) -> Chart {
     chart
 }
 
+fn stacked_area_chart() -> Chart {
+    let mut chart =
+        line_chart_with_markers([Some(MarkerSymbol::Circle), Some(MarkerSymbol::Diamond)]);
+    chart.chart_type = ChartType::Area;
+    chart.grouping = ChartGrouping::Stacked;
+    chart.series[0].values = vec![4.0, 8.0, 6.0];
+    chart.series[1].values = vec![6.0, 2.0, 5.0];
+    chart
+}
+
+#[test]
+fn a_stacked_area_chart_draws_one_closed_filled_region_per_series() {
+    let source = chart_source(stacked_area_chart());
+    let regions: Vec<&str> = source
+        .lines()
+        .filter(|line| line.contains("path(fill:"))
+        .collect();
+
+    assert_eq!(
+        regions.len(),
+        2,
+        "each stacked series must be an area, not an ordinary polyline: {source}"
+    );
+    assert!(
+        regions
+            .iter()
+            .all(|line| line.contains("closed: true") && line.contains("stroke:")),
+        "each area must close, fill, and retain its top-edge stroke: {regions:#?}"
+    );
+}
+
+#[test]
+fn stacked_area_boundaries_accumulate_each_series_on_the_prior_one() {
+    let chart = stacked_area_chart();
+    let boundaries = crate::render::typst_gen::diagrams::stacked_series_boundaries(&chart);
+
+    assert_eq!(boundaries[0].0, vec![0.0, 0.0, 0.0]);
+    assert_eq!(boundaries[0].1, vec![4.0, 8.0, 6.0]);
+    assert_eq!(boundaries[1].0, vec![4.0, 8.0, 6.0]);
+    assert_eq!(boundaries[1].1, vec![10.0, 10.0, 11.0]);
+}
+
+#[test]
+fn negative_stacked_values_accumulate_below_zero_independently() {
+    let mut chart = stacked_area_chart();
+    chart.series[0].values = vec![4.0, -3.0, -2.0];
+    chart.series[1].values = vec![-6.0, -2.0, 5.0];
+
+    let boundaries = crate::render::typst_gen::diagrams::stacked_series_boundaries(&chart);
+
+    assert_eq!(boundaries[0], (vec![0.0, 0.0, 0.0], vec![4.0, -3.0, -2.0]));
+    assert_eq!(boundaries[1].0, vec![0.0, -3.0, 0.0]);
+    assert_eq!(boundaries[1].1, vec![-6.0, -5.0, 5.0]);
+}
+
+#[test]
+fn percent_stacks_normalize_positive_and_negative_sides_separately() {
+    let mut chart = stacked_area_chart();
+    chart.grouping = ChartGrouping::PercentStacked;
+    chart.series[0].values = vec![1.0, -3.0, 3.0];
+    chart.series[1].values = vec![3.0, -1.0, 1.0];
+
+    let boundaries = crate::render::typst_gen::diagrams::stacked_series_boundaries(&chart);
+
+    assert_eq!(boundaries[0].1, vec![25.0, -75.0, 75.0]);
+    assert_eq!(boundaries[1].0, vec![25.0, -75.0, 75.0]);
+    assert_eq!(boundaries[1].1, vec![100.0, -100.0, 100.0]);
+}
+
+#[test]
+fn a_mixed_sign_percent_stacked_area_draws_the_full_negative_and_positive_scale() {
+    let mut chart = stacked_area_chart();
+    chart.grouping = ChartGrouping::PercentStacked;
+    chart.series[0].values = vec![1.0, -3.0, 3.0];
+    chart.series[1].values = vec![3.0, -1.0, 1.0];
+
+    let ticks = emitted_axis_ticks(&chart_source(chart));
+    assert_eq!(
+        ticks.first(),
+        Some(&-100.0),
+        "negative stacks need the -100 tick: {ticks:?}"
+    );
+    assert_eq!(
+        ticks.last(),
+        Some(&100.0),
+        "positive stacks need the 100 tick: {ticks:?}"
+    );
+}
+
+#[test]
+fn an_area_chart_ticks_each_mid_category_point_instead_of_band_boundaries() {
+    let source = chart_source(stacked_area_chart());
+    let lines = emitted_lines(&source);
+    let plot = plot_rect(&lines);
+    let (under, _) = tick_marks_by_edge(&lines, plot);
+
+    assert_eq!(
+        under.len(),
+        3,
+        "midCat puts one tick at each of the three points, including both plot edges: {under:#?}\n{source}"
+    );
+    assert!(
+        under.iter().any(|line| same_length(line.dx, plot.0))
+            && under
+                .iter()
+                .any(|line| same_length(line.dx, plot.0 + plot.2)),
+        "the first and last area points must reach the plot edges: {under:#?}\n{source}"
+    );
+}
+
 /// How many markers of each shape the source draws, as
 /// `(circles, polygons, squares)`. A line chart draws nothing else as any of
 /// them, so every hit is a marker — in the plot or on a legend key.
