@@ -1369,7 +1369,10 @@ fn write_placed_sheet_anchor(
                 format_f64(text_box.width),
                 format_f64(text_box.height),
             );
-            if let Some(fill) = text_box.fill {
+            if let Some(ref gradient) = text_box.gradient_fill {
+                out.push_str(", fill: ");
+                write_gradient_fill(out, gradient);
+            } else if let Some(fill) = text_box.fill {
                 let _ = write!(out, ", fill: {}", rgb(&fill));
             }
             if let Some(ref border) = text_box.border {

@@ -339,6 +339,7 @@ fn test_drawings_shift_with_the_inset_grid() {
         height: 20.0,
         paragraphs: Vec::new(),
         fill: None,
+        gradient_fill: None,
         border: None,
         vertical_center: false,
         print_scale: 1.0,

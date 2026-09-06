@@ -3679,6 +3679,7 @@ fn test_centered_sheet_moves_its_drawings_with_the_grid() {
             }],
         }],
         fill: None,
+        gradient_fill: None,
         border: None,
         vertical_center: false,
         print_scale: 1.0,

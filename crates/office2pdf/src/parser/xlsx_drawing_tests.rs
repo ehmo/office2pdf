@@ -117,6 +117,42 @@ fn scheme_fill_falls_back_to_light_dark_without_theme() {
 }
 
 #[test]
+fn worksheet_text_box_parses_a_linear_gradient_fill() {
+    let xml = r#"<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <xdr:twoCellAnchor>
+    <xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>4</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>4</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+    <xdr:sp>
+      <xdr:spPr>
+        <a:gradFill><a:gsLst>
+          <a:gs pos="0"><a:srgbClr val="DDEBF7"/></a:gs>
+          <a:gs pos="50000"><a:schemeClr val="accent1"/></a:gs>
+          <a:gs pos="100000"><a:srgbClr val="17365D"/></a:gs>
+        </a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill>
+      </xdr:spPr>
+      <xdr:txBody><a:bodyPr/><a:p><a:r><a:t>visible</a:t></a:r></a:p></xdr:txBody>
+    </xdr:sp>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>
+</xdr:wsDr>"#;
+    let boxes = parse_drawing_text_boxes(xml, &accent_theme(), &ThemeFontScheme::default());
+    assert_eq!(boxes.len(), 1);
+    assert_eq!(boxes[0].fill, None);
+    let gradient = boxes[0]
+        .gradient_fill
+        .as_ref()
+        .expect("the gradient is the text box background");
+    assert_eq!(gradient.stops.len(), 3);
+    assert!((gradient.angle - 90.0).abs() < 1e-9);
+    assert!((gradient.stops[0].position - 0.0).abs() < 1e-9);
+    assert_eq!(gradient.stops[0].color, Color::new(0xDD, 0xEB, 0xF7));
+    assert!((gradient.stops[1].position - 0.5).abs() < 1e-9);
+    assert_eq!(gradient.stops[1].color, Color::new(68, 114, 196));
+    assert!((gradient.stops[2].position - 1.0).abs() < 1e-9);
+    assert_eq!(gradient.stops[2].color, Color::new(0x17, 0x36, 0x5D));
+}
+
+#[test]
 fn theme_color_scheme_parses_from_theme_xml() {
     let theme_xml = r#"<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
   <a:themeElements>

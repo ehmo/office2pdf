@@ -950,6 +950,7 @@ pub(super) struct RawTextBoxAnchor {
     pub(super) geometry: ImageAnchorGeometry,
     pub(super) paragraphs: Vec<crate::ir::Paragraph>,
     pub(super) fill: Option<crate::ir::Color>,
+    pub(super) gradient_fill: Option<crate::ir::GradientFill>,
     pub(super) border: Option<crate::ir::BorderSide>,
     pub(super) vertical_center: bool,
 }
@@ -1068,6 +1069,83 @@ pub(in crate::parser) fn apply_run_properties(
     }
 }
 
+/// Parse a worksheet shape's linear DrawingML gradient, resolving every stop
+/// against the workbook theme. The reader is consumed through `</a:gradFill>`.
+fn parse_drawing_gradient_fill(
+    reader: &mut quick_xml::Reader<&[u8]>,
+    scheme: &crate::parser::drawingml::SchemeColors<'_>,
+) -> Option<crate::ir::GradientFill> {
+    use quick_xml::events::Event;
+
+    let mut in_stop_list = false;
+    let mut in_stop = false;
+    let mut current_position = 0.0;
+    let mut stops = Vec::new();
+    let mut angle = 0.0;
+    let mut depth = 1usize;
+
+    while depth > 0 {
+        match reader.read_event() {
+            Ok(Event::Start(ref element)) => {
+                depth += 1;
+                match element.local_name().as_ref() {
+                    b"gsLst" => in_stop_list = true,
+                    b"gs" if in_stop_list => {
+                        in_stop = true;
+                        current_position =
+                            xml_util::get_attr_i64(element, b"pos").unwrap_or(0) as f64 / 100_000.0;
+                    }
+                    b"srgbClr" | b"schemeClr" | b"sysClr" if in_stop => {
+                        if let Some(color) = crate::parser::drawingml::parse_color_from_start(
+                            reader, element, scheme,
+                        )
+                        .color
+                        {
+                            stops.push(crate::ir::GradientStop {
+                                position: current_position,
+                                color,
+                            });
+                        }
+                        // The shared color reader consumed this element's end tag.
+                        depth = depth.saturating_sub(1);
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Empty(ref element)) => match element.local_name().as_ref() {
+                b"srgbClr" | b"schemeClr" | b"sysClr" if in_stop => {
+                    if let Some(color) =
+                        crate::parser::drawingml::parse_color_from_empty(element, scheme).color
+                    {
+                        stops.push(crate::ir::GradientStop {
+                            position: current_position,
+                            color,
+                        });
+                    }
+                }
+                b"lin" => {
+                    if let Some(raw) = xml_util::get_attr_i64(element, b"ang") {
+                        angle = (raw as f64 / 60_000.0).rem_euclid(360.0);
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::End(ref element)) => {
+                depth = depth.saturating_sub(1);
+                match element.local_name().as_ref() {
+                    b"gsLst" => in_stop_list = false,
+                    b"gs" => in_stop = false,
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    (stops.len() >= 2).then_some(crate::ir::GradientFill { stops, angle })
+}
+
 /// Parse `<xdr:sp>` text boxes from a worksheet drawing, resolving scheme
 /// colors against the workbook theme palette and run typefaces against its
 /// font scheme.
@@ -1115,6 +1193,7 @@ pub(super) fn parse_drawing_text_boxes(
     let mut in_run = false;
     let mut in_text = false;
     let mut fill: Option<crate::ir::Color> = None;
+    let mut gradient_fill: Option<crate::ir::GradientFill> = None;
     let mut border_color: Option<crate::ir::Color> = None;
     let mut border_width: f64 = 0.75;
     let mut vertical_center = false;
@@ -1131,6 +1210,7 @@ pub(super) fn parse_drawing_text_boxes(
                         ext_emu = None;
                         paragraphs.clear();
                         fill = None;
+                        gradient_fill = None;
                         border_color = None;
                         border_width = 0.75;
                         vertical_center = false;
@@ -1147,6 +1227,9 @@ pub(super) fn parse_drawing_text_boxes(
                     b"sp" if in_anchor => in_sp = true,
                     b"txBody" if in_sp => in_tx_body = true,
                     b"solidFill" if in_sp && !in_tx_body && !in_line => in_sp_fill = true,
+                    b"gradFill" if in_sp && !in_tx_body && !in_line => {
+                        gradient_fill = parse_drawing_gradient_fill(&mut reader, &scheme);
+                    }
                     b"ln" if in_sp && !in_tx_body => {
                         in_line = true;
                         for attr in e.attributes().flatten() {
@@ -1321,6 +1404,7 @@ pub(super) fn parse_drawing_text_boxes(
                                 },
                                 paragraphs: std::mem::take(&mut paragraphs),
                                 fill,
+                                gradient_fill: gradient_fill.take(),
                                 border: border_color.map(|color| BorderSide {
                                     width: border_width,
                                     color,

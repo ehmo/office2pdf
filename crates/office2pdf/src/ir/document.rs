@@ -276,6 +276,8 @@ pub struct SheetTextBox {
     pub paragraphs: Vec<super::elements::Paragraph>,
     /// Box fill color.
     pub fill: Option<super::style::Color>,
+    /// Box gradient fill. Takes precedence over a solid fill when present.
+    pub gradient_fill: Option<super::elements::GradientFill>,
     /// Box outline.
     pub border: Option<super::elements::BorderSide>,
     /// bodyPr anchor="ctr": center text vertically inside the box.

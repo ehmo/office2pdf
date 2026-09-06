@@ -2015,6 +2015,7 @@ fn make_sheet_text_box(anchor_row: u32, x_offset_pt: f64, height: f64) -> crate:
             }],
         }],
         fill: None,
+        gradient_fill: None,
         border: None,
         vertical_center: false,
         print_scale: 1.0,
@@ -2043,6 +2044,35 @@ fn sheet_page_with_text_boxes(text_boxes: Vec<crate::ir::SheetTextBox>) -> Page 
         images: Vec::new(),
         text_boxes,
     })
+}
+
+#[test]
+fn test_sheet_text_box_renders_its_gradient_behind_the_text() {
+    let mut text_box = make_sheet_text_box(1, 0.0, 60.0);
+    text_box.gradient_fill = Some(GradientFill {
+        stops: vec![
+            crate::ir::GradientStop {
+                position: 0.0,
+                color: Color::new(0xDD, 0xEB, 0xF7),
+            },
+            crate::ir::GradientStop {
+                position: 1.0,
+                color: Color::new(0x17, 0x36, 0x5D),
+            },
+        ],
+        angle: 90.0,
+    });
+    let source = generate_typst(&make_doc(vec![sheet_page_with_text_boxes(vec![text_box])]))
+        .unwrap()
+        .source;
+    assert!(
+        source.contains(
+            "fill: gradient.linear((rgb(221, 235, 247), 0%), (rgb(23, 54, 93), 100%), angle: 90deg)"
+        ),
+        "the text box keeps its linear gradient: {source}"
+    );
+    crate::render::pdf::compile_to_pdf(&source, &[], None, &[], false, false)
+        .expect("the gradient text box compiles");
 }
 
 /// A text box that crosses a horizontal page break is drawn once per page.

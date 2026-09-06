@@ -602,6 +602,7 @@ fn anchored_text_box(
         height: placed.image.height.unwrap_or(50.0),
         paragraphs: anchor.paragraphs,
         fill: anchor.fill,
+        gradient_fill: anchor.gradient_fill,
         border: anchor.border,
         vertical_center: anchor.vertical_center,
         print_scale: 1.0,

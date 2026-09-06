@@ -1922,6 +1922,144 @@ fn finish_drawing_anchor(
     Ok(())
 }
 
+#[derive(Default)]
+struct WorksheetGradientScan {
+    stops: usize,
+    current_stop_has_color: bool,
+    saw_linear: bool,
+}
+
+fn worksheet_gradient_error(sheet_name: &str) -> ConvertError {
+    unsupported(format!(
+        "unsupported worksheet text-box gradient on sheet: {sheet_name}"
+    ))
+}
+
+/// Admit only the linear worksheet text-box gradients the renderer preserves.
+/// In particular, path gradients, translucent stops, incomplete stop lists,
+/// and scaled angle semantics must refuse instead of leaving light text on an
+/// unpainted page.
+fn validate_worksheet_shape_gradients(xml: &str, sheet_name: &str) -> Result<(), ConvertError> {
+    let mut reader = Reader::from_str(xml);
+    let mut ancestors: Vec<Vec<u8>> = Vec::new();
+    let mut gradient: Option<WorksheetGradientScan> = None;
+
+    loop {
+        let event = reader.read_event();
+        let is_start = matches!(event, Ok(Event::Start(_)));
+        let is_empty = matches!(event, Ok(Event::Empty(_)));
+        let element = match &event {
+            Ok(Event::Start(element) | Event::Empty(element)) => element,
+            Ok(Event::End(element)) => {
+                match element.local_name().as_ref() {
+                    b"gs" if gradient.is_some() => {
+                        let scan = gradient.as_mut().expect("gradient is present");
+                        if !scan.current_stop_has_color {
+                            return Err(worksheet_gradient_error(sheet_name));
+                        }
+                        scan.current_stop_has_color = false;
+                    }
+                    b"gradFill" if gradient.is_some() => {
+                        let scan = gradient.take().expect("gradient is present");
+                        if scan.stops < 2 || scan.current_stop_has_color || !scan.saw_linear {
+                            return Err(worksheet_gradient_error(sheet_name));
+                        }
+                    }
+                    _ => {}
+                }
+                ancestors.pop();
+                continue;
+            }
+            Ok(Event::Eof) => break,
+            Err(error) => {
+                return Err(crate::parser::parse_err(format!(
+                    "Failed to parse drawing on sheet {sheet_name}: {error}"
+                )));
+            }
+            _ => continue,
+        };
+        let name = element.local_name();
+        let parent = ancestors.last().map(Vec::as_slice);
+        let in_text_box_shape = ancestors.iter().any(|ancestor| ancestor == b"sp");
+
+        if gradient.is_none()
+            && in_text_box_shape
+            && parent == Some(b"spPr")
+            && name.as_ref() == b"gradFill"
+        {
+            let attributes = chart_drawing_attributes(&reader, element)
+                .ok_or_else(|| worksheet_gradient_error(sheet_name))?;
+            if !is_start || !attributes.is_empty() {
+                return Err(worksheet_gradient_error(sheet_name));
+            }
+            gradient = Some(WorksheetGradientScan::default());
+        } else if let Some(scan) = gradient.as_mut() {
+            let valid = match (parent, name.as_ref()) {
+                (Some(b"gradFill"), b"gsLst") => chart_drawing_attributes(&reader, element)
+                    .is_some_and(|attributes| is_start && attributes.is_empty()),
+                (Some(b"gsLst"), b"gs") => {
+                    let position = chart_exact_attribute(&reader, element, b"pos")
+                        .and_then(|value| value.parse::<i64>().ok());
+                    if is_start
+                        && position.is_some_and(|value| (0..=100_000).contains(&value))
+                        && !scan.current_stop_has_color
+                    {
+                        scan.stops += 1;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                (Some(b"gs"), b"srgbClr" | b"schemeClr" | b"sysClr") => {
+                    if scan.current_stop_has_color {
+                        false
+                    } else {
+                        let supported =
+                            chart_color_element_supported(&reader, element, Some(b"solidFill"));
+                        scan.current_stop_has_color = supported;
+                        supported
+                    }
+                }
+                (
+                    Some(b"srgbClr" | b"schemeClr" | b"sysClr"),
+                    b"alpha" | b"tint" | b"shade" | b"satMod" | b"satOff" | b"lumMod" | b"lumOff"
+                    | b"hueOff",
+                ) => is_empty && chart_color_element_supported(&reader, element, parent),
+                (Some(b"gradFill"), b"lin") => {
+                    let attributes = chart_drawing_attributes(&reader, element).unwrap_or_default();
+                    let angle = attributes
+                        .get(b"ang".as_slice())
+                        .and_then(|value| value.parse::<i64>().ok());
+                    let scaled = attributes.get(b"scaled".as_slice());
+                    let supported = is_empty
+                        && matches!(attributes.len(), 1 | 2)
+                        && angle.is_some_and(|value| (0..=21_600_000).contains(&value))
+                        && scaled.is_none_or(|value| false_value(Some(value.clone())));
+                    if supported && !scan.saw_linear {
+                        scan.saw_linear = true;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err(worksheet_gradient_error(sheet_name));
+            }
+        }
+
+        if is_start {
+            ancestors.push(name.as_ref().to_vec());
+        }
+    }
+
+    if gradient.is_some() {
+        return Err(worksheet_gradient_error(sheet_name));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2337,6 +2475,40 @@ mod tests {
             validate_worksheet_drawing(xml, "Budget").expect("both objects are modeled"),
             vec!["rId7"]
         );
+    }
+
+    #[test]
+    fn drawing_accepts_only_supported_linear_text_box_gradients() {
+        let supported = r#"<xdr:wsDr xmlns:xdr="urn:xdr" xmlns:a="urn:a"><xdr:twoCellAnchor><xdr:sp><xdr:spPr><a:gradFill><a:gsLst><a:gs pos="0"><a:srgbClr val="DDEBF7"/></a:gs><a:gs pos="50000"><a:srgbClr val="5B9BD5"/></a:gs><a:gs pos="100000"><a:srgbClr val="17365D"/></a:gs></a:gsLst><a:lin ang="5400000" scaled="0"/></a:gradFill></xdr:spPr><xdr:txBody><a:p><a:r><a:rPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>Visible over its background</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>"#;
+        validate_worksheet_drawing(supported, "Budget")
+            .expect("an opaque linear gradient with three resolved stops is rendered");
+
+        let unsupported = [
+            supported.replace(
+                r#"<a:lin ang="5400000" scaled="0"/>"#,
+                r#"<a:path path="circle"/>"#,
+            ),
+            supported.replace(r#"scaled="0""#, r#"scaled="1""#),
+            supported.replace(
+                r#"<a:gs pos="50000"><a:srgbClr val="5B9BD5"/></a:gs><a:gs pos="100000"><a:srgbClr val="17365D"/></a:gs>"#,
+                "",
+            ),
+            supported.replace(
+                r#"<a:srgbClr val="5B9BD5"/>"#,
+                r#"<a:srgbClr val="5B9BD5"><a:alpha val="50000"/></a:srgbClr>"#,
+            ),
+            supported.replace(
+                r#"<a:srgbClr val="5B9BD5"/>"#,
+                r#"<a:srgbClr val="5B9BD5"/><a:srgbClr val="FFFFFF"/>"#,
+            ),
+        ];
+        for xml in unsupported {
+            assert_unsupported(
+                validate_worksheet_drawing(&xml, "Budget")
+                    .expect_err("unsupported gradient semantics must not disappear"),
+                "unsupported worksheet text-box gradient on sheet: Budget",
+            );
+        }
     }
 
     #[test]
@@ -3332,6 +3504,7 @@ mod tests {
 }
 
 fn validate_worksheet_drawing(xml: &str, sheet_name: &str) -> Result<Vec<String>, ConvertError> {
+    validate_worksheet_shape_gradients(xml, sheet_name)?;
     let mut reader = Reader::from_str(xml);
     let mut anchor: Option<DrawingAnchor> = None;
     let mut chart_rids = Vec::new();
