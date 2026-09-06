@@ -2743,6 +2743,13 @@ mod tests {
         let base = r#"<c:chartSpace xmlns:c="urn:c" xmlns:a="urn:a"><c:chart><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:cat><c:strLit><c:pt idx="0"><c:v>A</c:v></c:pt></c:strLit></c:cat><c:val><c:numLit><c:pt idx="0"><c:v>1</c:v></c:pt></c:numLit></c:val></c:ser></c:barChart><c:catAx><c:axPos val="b"/><c:txPr><a:bodyPr rot="-60000000" spcFirstLastPara="1" vertOverflow="ellipsis" vert="horz" wrap="square" anchor="ctr" anchorCtr="1"/><a:p><a:pPr><a:defRPr sz="900" b="0" i="0" u="none" strike="noStrike" kern="1200" baseline="0"/></a:pPr></a:p></c:txPr></c:catAx><c:valAx><c:axPos val="l"/><c:crossBetween val="between"/><c:title><c:tx><c:rich><a:bodyPr rot="-5400000"/><a:p><a:pPr><a:defRPr sz="900" b="1" i="0" u="none" strike="noStrike" baseline="0"/></a:pPr><a:r><a:rPr sz="900" b="1" i="0" u="none" strike="noStrike" baseline="0"/><a:t>Value</a:t></a:r></a:p></c:rich></c:tx></c:title></c:valAx></c:plotArea></c:chart><c:txPr><a:bodyPr rot="0" wrap="square"/><a:p><a:pPr><a:defRPr sz="1000" b="0" i="0" u="none" strike="noStrike" kern="1200" baseline="0"/></a:pPr></a:p></c:txPr></c:chartSpace>"#;
         validate_chart_xml(base, "Budget")
             .expect("neutral text properties and the two modeled rotations are admitted");
+        let language_metadata = base.replacen(
+            "<a:rPr sz=\"900\" b=\"1\" i=\"0\" u=\"none\" strike=\"noStrike\" baseline=\"0\"/>",
+            "<a:rPr sz=\"900\" b=\"1\" i=\"0\" u=\"none\" strike=\"noStrike\" baseline=\"0\" lang=\"en-US\"/>",
+            1,
+        );
+        validate_chart_xml(&language_metadata, "Budget")
+            .expect("language metadata does not change rendered chart text");
         let script_defaults = base.replacen(
             "<a:defRPr sz=\"900\" b=\"0\" i=\"0\" u=\"none\" strike=\"noStrike\" kern=\"1200\" baseline=\"0\"/>",
             "<a:defRPr sz=\"900\" b=\"0\" i=\"0\" u=\"none\" strike=\"noStrike\" kern=\"1200\" baseline=\"0\"><a:ea typeface=\"+mn-ea\"/><a:cs typeface=\"+mn-cs\"/></a:defRPr>",
@@ -4356,6 +4363,10 @@ fn chart_text_attributes_supported(
                 b"strike" => value == "noStrike",
                 b"baseline" => value == "0",
                 b"kern" => value.parse::<u32>().is_ok(),
+                b"lang" | b"altLang" => !value.trim().is_empty(),
+                b"dirty" | b"smtClean" => {
+                    matches!(value, "0" | "1" | "false" | "true" | "off" | "on")
+                }
                 _ => false,
             }
         };
