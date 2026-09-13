@@ -43,6 +43,8 @@ pub mod config;
 pub(crate) mod defaults;
 pub mod error;
 pub mod ir;
+mod docx_font_requests;
+mod docx_font_choices;
 pub(crate) mod parser;
 #[cfg(feature = "pdf-ops")]
 pub mod pdf_ops;
@@ -57,8 +59,11 @@ pub mod wasm;
 #[doc(hidden)]
 pub mod internal {
     pub use crate::parser::Parser;
+    #[cfg(feature = "format-docx")]
     pub use crate::parser::docx::DocxParser;
+    #[cfg(feature = "format-pptx")]
     pub use crate::parser::pptx::PptxParser;
+    #[cfg(feature = "format-xlsx")]
     pub use crate::parser::xlsx::XlsxParser;
     pub use crate::render::typst_gen::{TypstOutput, generate_typst};
 }

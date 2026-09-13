@@ -161,6 +161,26 @@ pub(super) fn convert_bytes(
     format: Format,
     options: &ConvertOptions,
 ) -> Result<ConvertResult, ConvertError> {
+    convert_bytes_with_docx_choices(data, format, options, None)
+}
+
+pub(super) fn convert_reviewed_docx_bytes(
+    data: &[u8],
+    options: &ConvertOptions,
+    choices: &[crate::docx_font_choices::Choice],
+) -> Result<ConvertResult, ConvertError> {
+    if data.is_empty() || data.len() > 1024 * 1024 || options.streaming {
+        return Err(ConvertError::Parse("font_choices_input".into()));
+    }
+    convert_bytes_with_docx_choices(data, Format::Docx, options, Some(choices))
+}
+
+fn convert_bytes_with_docx_choices(
+    data: &[u8],
+    format: Format,
+    options: &ConvertOptions,
+    choices: Option<&[crate::docx_font_choices::Choice]>,
+) -> Result<ConvertResult, ConvertError> {
     if is_ole2(data) {
         return Err(ConvertError::UnsupportedEncryption);
     }
@@ -192,15 +212,22 @@ pub(super) fn convert_bytes(
         .collect();
 
     let parser: Box<dyn Parser> = match format {
+        #[cfg(feature = "format-docx")]
         Format::Docx => Box::new(parser::docx::DocxParser),
+        #[cfg(feature = "format-pptx")]
         Format::Pptx => Box::new(parser::pptx::PptxParser),
+        #[cfg(feature = "format-xlsx")]
         Format::Xlsx => Box::new(parser::xlsx::XlsxParser),
+        #[allow(unreachable_patterns)]
+        _ => {
+            return Err(ConvertError::UnsupportedFormat(format_label(format).to_string()));
+        }
     };
 
     let parse_start: Instant = Instant::now();
     let parse_result =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser.parse(data, options)));
-    let (doc, mut warnings) = match parse_result {
+    let (mut doc, mut warnings) = match parse_result {
         Ok(result) => result?,
         Err(panic_info) => {
             return Err(ConvertError::Parse(format!(
@@ -211,6 +238,21 @@ pub(super) fn convert_bytes(
     };
     let parse_duration = parse_start.elapsed();
     let page_count = doc.pages.len() as u32;
+    if let Some(choices) = choices {
+        use typst::text::{FontStretch, FontStyle};
+        if !warnings.is_empty() { return Err(ConvertError::Parse("font_choices_parse_warning".into())); }
+        crate::docx_font_choices::apply(&mut doc, choices, |choice, points| {
+            additional_fonts.iter().any(|font| {
+                let info = font.info();
+                info.family.eq_ignore_ascii_case(&choice.family)
+                    && info.variant.weight.to_number() == if choice.bold { 700 } else { 400 }
+                    && info.variant.style == if choice.italic { FontStyle::Italic } else { FontStyle::Normal }
+                    && info.variant.stretch == FontStretch::NORMAL
+                    && points.iter().all(|point| char::from_u32(*point).is_some_and(|scalar|
+                        font.ttf().glyph_index(scalar).is_some_and(|glyph| glyph.0 != 0)))
+            })
+        }).map_err(|message| ConvertError::Parse(message.into()))?;
+    }
 
     #[cfg(not(target_arch = "wasm32"))]
     let font_context = resolve_font_context_with_embedded(
@@ -326,7 +368,7 @@ pub(super) fn convert_bytes(
     ))
 }
 
-#[cfg(feature = "pdf-ops")]
+#[cfg(all(feature = "pdf-ops", feature = "format-xlsx"))]
 fn convert_bytes_streaming_xlsx(
     data: &[u8],
     options: &ConvertOptions,

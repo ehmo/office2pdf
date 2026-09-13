@@ -1,18 +1,27 @@
 pub(crate) mod chart;
+#[cfg(feature = "format-xlsx")]
 pub(crate) mod cond_fmt;
+#[cfg(feature = "format-docx")]
 pub mod docx;
+#[cfg(all(feature = "format-docx", not(feature = "format-pptx")))]
+#[path = "pptx_custom_geometry.rs"]
+pub(crate) mod docx_custom_geometry;
 pub(crate) mod drawingml;
 pub(crate) mod embedded_fonts;
 #[path = "pptx_emf.rs"]
 pub(crate) mod emf;
 pub(crate) mod metadata;
 pub(crate) mod omml;
+#[cfg(feature = "format-pptx")]
 pub mod pptx;
+#[cfg(feature = "format-pptx")]
 pub(crate) mod smartart;
 pub(crate) mod units;
 pub(crate) mod wmf;
+#[cfg(feature = "format-xlsx")]
 pub mod xlsx;
 #[path = "xlsx_formula.rs"]
+#[cfg(feature = "format-xlsx")]
 pub(crate) mod xlsx_formula;
 pub(crate) mod xml_util;
 

@@ -14,6 +14,10 @@ categories = ["text-processing"]
 crate-type = ["cdylib", "rlib"]
 
 [features]
+default = ["format-docx", "format-pptx", "format-xlsx"]
+format-docx = ["dep:docx-rs"]
+format-pptx = []
+format-xlsx = []
 wasm = ["wasm-bindgen"]
 wasm-cjk-font = ["wasm"]
 pdf-ops = ["lopdf"]
@@ -29,7 +33,7 @@ typst-kit = { version = "0.14", default-features = false, features = [
     "embed-fonts",
 ] }
 comemo = "0.5"
-docx-rs = "0.4"
+docx-rs = { version = "0.4", optional = true }
 serde = "1"
 serde_json = "1"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
