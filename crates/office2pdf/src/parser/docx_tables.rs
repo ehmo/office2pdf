@@ -43,30 +43,6 @@ fn extract_margin_side_points(side_json: &serde_json::Value) -> Option<f64> {
     }
 }
 
-fn extract_insets_from_margins_json(margins_json: &serde_json::Value) -> Option<Insets> {
-    let top = margins_json.get("top").and_then(extract_margin_side_points);
-    let right = margins_json
-        .get("right")
-        .and_then(extract_margin_side_points);
-    let bottom = margins_json
-        .get("bottom")
-        .and_then(extract_margin_side_points);
-    let left = margins_json
-        .get("left")
-        .and_then(extract_margin_side_points);
-
-    if top.is_none() && right.is_none() && bottom.is_none() && left.is_none() {
-        return None;
-    }
-
-    Some(Insets {
-        top: top.unwrap_or_default(),
-        right: right.unwrap_or_default(),
-        bottom: bottom.unwrap_or_default(),
-        left: left.unwrap_or_default(),
-    })
-}
-
 fn extract_table_alignment(prop_json: Option<&serde_json::Value>) -> Option<Alignment> {
     prop_json
         .and_then(|j| j.get("justification"))
@@ -79,9 +55,30 @@ fn extract_table_alignment(prop_json: Option<&serde_json::Value>) -> Option<Alig
 }
 
 fn extract_table_default_cell_padding(prop_json: Option<&serde_json::Value>) -> Option<Insets> {
-    prop_json
-        .and_then(|j| j.get("margins"))
-        .and_then(extract_insets_from_margins_json)
+    // ECMA-376's table-cell defaults are 0pt on the block sides and 108
+    // twips (5.4pt) on the writing sides. A missing `w:tblCellMar` keeps
+    // those defaults; a partial declaration overrides only the named sides.
+    let mut padding = Insets {
+        top: 0.0,
+        right: 5.4,
+        bottom: 0.0,
+        left: 5.4,
+    };
+    if let Some(margins) = prop_json.and_then(|j| j.get("margins")) {
+        if let Some(value) = margins.get("top").and_then(extract_margin_side_points) {
+            padding.top = value;
+        }
+        if let Some(value) = margins.get("right").and_then(extract_margin_side_points) {
+            padding.right = value;
+        }
+        if let Some(value) = margins.get("bottom").and_then(extract_margin_side_points) {
+            padding.bottom = value;
+        }
+        if let Some(value) = margins.get("left").and_then(extract_margin_side_points) {
+            padding.left = value;
+        }
+    }
+    Some(padding)
 }
 
 fn extract_cell_padding(

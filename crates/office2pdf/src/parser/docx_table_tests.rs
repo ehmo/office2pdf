@@ -765,6 +765,29 @@ fn test_table_header_rows_from_raw_docx_xml() {
 }
 
 #[test]
+fn test_table_without_cell_margins_uses_word_defaults() {
+    let table = docx_rs::Table::new(vec![docx_rs::TableRow::new(vec![
+        docx_rs::TableCell::new()
+            .add_paragraph(docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Cell"))),
+    ])]);
+
+    let data = build_docx_with_table(table);
+    let parser = DocxParser;
+    let (doc, _warnings) = parser.parse(&data, &ConvertOptions::default()).unwrap();
+    let t = first_table(&doc);
+
+    assert_eq!(
+        t.default_cell_padding,
+        Some(Insets {
+            top: 0.0,
+            right: 5.4,
+            bottom: 0.0,
+            left: 5.4,
+        })
+    );
+}
+
+#[test]
 fn test_table_default_cell_margins_from_table_property() {
     let table = docx_rs::Table::new(vec![docx_rs::TableRow::new(vec![
         docx_rs::TableCell::new()
