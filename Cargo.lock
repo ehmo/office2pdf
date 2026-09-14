@@ -857,7 +857,7 @@ checksum = "780955b8b195a21ab8e4ac6b60dd1dbdcec1dc6c51c0617964b08c81785e12c9"
 [[package]]
 name = "docx-rs"
 version = "0.4.19"
-source = "git+https://github.com/developer0hye/docx-rs.git?branch=fix%2Fparse-tolerance#3e0d273a374a83cf94eb48db31eed1a30227cb31"
+source = "git+https://github.com/ehmo/docx-rs.git?branch=pdfpix%2Fnamespace-aware-reader#a21d9d0a68b47a9798cd8f8db9475863dcd13478"
 dependencies = [
  "base64",
  "image",

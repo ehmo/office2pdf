@@ -10,7 +10,7 @@ repository = "https://github.com/developer0hye/office2pdf"
 
 [patch.crates-io]
 umya-spreadsheet = { git = "https://github.com/developer0hye/umya-spreadsheet.git", branch = "fix/panic-safety-v2" }
-docx-rs = { git = "https://github.com/developer0hye/docx-rs.git", branch = "fix/parse-tolerance" }
+docx-rs = { git = "https://github.com/ehmo/docx-rs.git", branch = "pdfpix/namespace-aware-reader" }
 # zune-jpeg 0.5.15 on crates.io ends a block with `warn!(…)` and no semicolon,
 # which rustc 1.97 rejects: "macro expansion ends with an incomplete
 # expression". It reaches us through `image`, so every Rust job fails on a cold

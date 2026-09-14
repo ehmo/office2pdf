@@ -901,6 +901,28 @@ fn test_hyperlink_multiple_links_in_paragraph() {
 #[path = "docx_notes_textbox_tests.rs"]
 mod notes_textbox_tests;
 
+#[test]
+fn test_parse_docx_with_arbitrary_wordprocessingml_prefix() {
+    let document_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<word:document xmlns:word="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <word:body>
+    <word:p><word:r><word:t>Prefix independent body</word:t></word:r></word:p>
+    <word:sectPr/>
+  </word:body>
+</word:document>"#;
+
+    let parser = DocxParser;
+    let (doc, warnings) = parser
+        .parse(
+            &build_docx_with_math(document_xml),
+            &ConvertOptions::default(),
+        )
+        .unwrap();
+
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    assert_eq!(first_run(&doc).text, "Prefix independent body");
+}
+
 // ── OMML math equation tests ──
 
 /// Build a DOCX ZIP with a custom document.xml containing OMML math.
