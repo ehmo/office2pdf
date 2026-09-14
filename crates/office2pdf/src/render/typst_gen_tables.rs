@@ -2229,10 +2229,13 @@ fn generate_cell_content(
                 } else {
                     // No wrapper settings reach a cell list, so it has no
                     // fixed text edges of its own to restore (issue #626).
+                    let list_id = ctx.next_list_id();
                     generate_list(
                         out,
                         list,
                         None,
+                        list_id,
+                        ctx.default_tab_width_pt,
                         ListEojeolWrap {
                             breaks_hangul_at_eojeol: ctx.breaks_hangul_at_eojeol,
                             line_box_em: None,

@@ -60,6 +60,14 @@ pub struct ParagraphStyle {
     pub line_box: Option<LineBox>,
     pub space_before: Option<f64>,
     pub space_after: Option<f64>,
+    /// The effective Word paragraph style ID. It is retained only for
+    /// properties whose meaning depends on adjacent paragraphs using the same
+    /// style, such as `w:contextualSpacing`.
+    pub paragraph_style_id: Option<String>,
+    /// Word's `w:contextualSpacing`: this paragraph's before and after spacing
+    /// is ignored next to a paragraph with the same effective style. `None`
+    /// means the document and its style chain state no value.
+    pub contextual_spacing: Option<bool>,
     /// Heading level (1 = H1, 2 = H2, ..., 6 = H6). When set, the paragraph
     /// is emitted as a Typst `#heading` element for proper PDF structure tagging.
     pub heading_level: Option<u8>,
@@ -335,6 +343,12 @@ impl ParagraphStyle {
         }
         if other.space_after.is_some() {
             self.space_after = other.space_after;
+        }
+        if other.paragraph_style_id.is_some() {
+            self.paragraph_style_id = other.paragraph_style_id.clone();
+        }
+        if other.contextual_spacing.is_some() {
+            self.contextual_spacing = other.contextual_spacing;
         }
         if other.heading_level.is_some() {
             self.heading_level = other.heading_level;

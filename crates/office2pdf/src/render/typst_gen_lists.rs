@@ -13,9 +13,10 @@ struct EffectiveListStyle<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct ListIndentGeometry {
-    marker_origin_pt: f64,
-    marker_width_pt: f64,
+pub(super) struct ListIndentGeometry {
+    pub(super) marker_origin_pt: f64,
+    pub(super) marker_width_pt: f64,
+    pub(super) absolute_marker_origin_pt: f64,
 }
 
 fn list_style_for_level<'a>(list: &'a List, level: u32) -> EffectiveListStyle<'a> {
@@ -51,6 +52,8 @@ fn write_list_open(
     style: &EffectiveListStyle<'_>,
     fallback_marker_style: Option<&TextStyle>,
     indent: Option<ListIndentGeometry>,
+    tab_shift_state: Option<&str>,
+    default_tab_width_pt: f64,
     spacing_pt: Option<f64>,
     start_at: Option<u32>,
 ) {
@@ -72,7 +75,14 @@ fn write_list_open(
     if style.kind == ListKind::Ordered {
         let marker_style = merge_marker_style(fallback_marker_style, style.marker_style);
         if marker_style.as_ref().is_some_and(has_text_properties) || indent.is_some() {
-            write_ordered_list_numbering_function(out, style, marker_style.as_ref(), indent);
+            write_ordered_list_numbering_function(
+                out,
+                style,
+                marker_style.as_ref(),
+                indent,
+                tab_shift_state,
+                default_tab_width_pt,
+            );
             out.push_str(", ");
         } else if let Some(numbering_pattern) = style.numbering_pattern {
             let _ = write!(
@@ -115,11 +125,14 @@ fn write_ordered_list_numbering_function(
     style: &EffectiveListStyle<'_>,
     marker_style: Option<&TextStyle>,
     indent: Option<ListIndentGeometry>,
+    tab_shift_state: Option<&str>,
+    default_tab_width_pt: f64,
 ) {
     let pattern: &str = style.numbering_pattern.unwrap_or("1.");
-    out.push_str("numbering: (..nums) => [");
-    if let Some(indent) = indent {
-        write_marker_box_open(out, indent.marker_width_pt);
+    if indent.is_some() {
+        out.push_str("numbering: (..nums) => context {\n  let marker = [");
+    } else {
+        out.push_str("numbering: (..nums) => [");
     }
     if let Some(marker_style) = marker_style.filter(|style| has_text_properties(style)) {
         out.push_str("#text(");
@@ -137,10 +150,41 @@ fn write_ordered_list_numbering_function(
     if marker_style.is_some_and(has_text_properties) {
         out.push(']');
     }
-    if indent.is_some() {
-        out.push_str("])");
-    }
-    out.push(']');
+    let Some(indent) = indent else {
+        out.push(']');
+        return;
+    };
+    let tab_shift_state = tab_shift_state.expect("indented ordered lists have a tab state");
+
+    out.push_str("]\n  let marker_width = measure(marker).width\n");
+    let _ = writeln!(
+        out,
+        "  let tab_remainder = calc.rem-euclid(({}pt + marker_width).abs.pt(), {})",
+        format_f64(indent.absolute_marker_origin_pt),
+        format_f64(default_tab_width_pt)
+    );
+    let _ = writeln!(
+        out,
+        "  let tab_advance = if tab_remainder == 0 {{ {}pt }} else {{ ({} - tab_remainder) * 1pt }}",
+        format_f64(default_tab_width_pt),
+        format_f64(default_tab_width_pt)
+    );
+    let _ = writeln!(
+        out,
+        "  let tab_shift = if marker_width <= {}pt {{ 0pt }} else {{ marker_width + tab_advance - {}pt }}",
+        format_f64(indent.marker_width_pt),
+        format_f64(indent.marker_width_pt)
+    );
+    let _ = writeln!(
+        out,
+        "  state(\"{}\", 0pt).update(tab_shift)",
+        escape_typst_string(tab_shift_state)
+    );
+    let _ = write!(
+        out,
+        "  box(width: {}pt, align(left)[#marker])\n}}",
+        format_f64(indent.marker_width_pt)
+    );
 }
 
 fn write_marker_box_open(out: &mut String, width_pt: f64) {
@@ -183,6 +227,7 @@ fn paragraph_list_indent(style: &ParagraphStyle) -> Option<ListIndentGeometry> {
     (marker_width_pt > 0.0001).then_some(ListIndentGeometry {
         marker_origin_pt,
         marker_width_pt,
+        absolute_marker_origin_pt: marker_origin_pt,
     })
 }
 
@@ -205,6 +250,16 @@ fn common_list_level_indent(
             })
         })
         .then_some(first)
+}
+
+pub(super) fn nested_list_indent(
+    mut child: ListIndentGeometry,
+    parent: ListIndentGeometry,
+) -> ListIndentGeometry {
+    // Keep `absolute_marker_origin_pt`: Word's suffix tab is measured from
+    // the page margin, even though Typst nests the child inside the parent.
+    child.marker_origin_pt -= parent.marker_origin_pt + parent.marker_width_pt;
+    child
 }
 
 fn paragraph_space_before(item: &crate::ir::ListItem) -> f64 {
@@ -279,10 +334,16 @@ fn list_boundary_spacing(
     Some(line_height + paragraph_gap)
 }
 
-/// Whether the paragraph renders under the wrapper's full-advance line box
-/// (no explicit line spacing or fixed line box of its own).
+/// Whether `word_line_height_settings` puts the paragraph's full advance in
+/// the wrapper. Natural and positive proportional spacing use that fixed box;
+/// exact spacing does not.
 fn paragraph_uses_full_line_box(paragraph: &Paragraph) -> bool {
-    paragraph.style.line_spacing.is_none() && paragraph.style.line_box.is_none()
+    paragraph.style.line_box.is_none()
+        && match paragraph.style.line_spacing {
+            None => true,
+            Some(LineSpacing::Proportional(factor)) => factor > 0.0,
+            Some(LineSpacing::Exact(_)) => false,
+        }
 }
 
 fn common_list_level_spacing(
@@ -300,9 +361,9 @@ fn common_list_level_spacing(
         .map(|pair| list_boundary_spacing(&pair[0], &pair[1], wrapper_spans_full_line));
     let first = boundaries.next()??;
 
-    (first > 0.0001
-        && boundaries.all(|spacing| spacing.is_some_and(|spacing| f64_approx_eq(spacing, first))))
-    .then_some(first)
+    boundaries
+        .all(|spacing| spacing.is_some_and(|spacing| f64_approx_eq(spacing, first)))
+        .then_some(first)
 }
 
 fn list_edge_spacing(
@@ -364,9 +425,19 @@ pub(super) fn generate_list(
     out: &mut String,
     list: &List,
     line_height_settings: Option<&str>,
+    list_id: usize,
+    default_tab_width_pt: f64,
     eojeol_wrap: ListEojeolWrap,
 ) -> Result<(), ConvertError> {
-    generate_list_with_spacing_model(out, list, line_height_settings, false, eojeol_wrap)
+    generate_list_with_spacing_model(
+        out,
+        list,
+        line_height_settings,
+        false,
+        list_id,
+        default_tab_width_pt,
+        eojeol_wrap,
+    )
 }
 
 /// `per_item_gaps` selects PowerPoint's paragraph spacing model over Word's:
@@ -378,6 +449,8 @@ pub(super) fn generate_list_with_spacing_model(
     list: &List,
     line_height_settings: Option<&str>,
     per_item_gaps: bool,
+    list_id: usize,
+    default_tab_width_pt: f64,
     mut eojeol_wrap: ListEojeolWrap,
 ) -> Result<(), ConvertError> {
     let wrapper_spans_full_line: bool = line_height_settings.is_some();
@@ -427,12 +500,16 @@ pub(super) fn generate_list_with_spacing_model(
                 .or_else(|| eojeol_wrap.line_box_em.filter(|_| wrapper_spans_full_line))
         })
         .flatten();
+    let tab_shift_state = (style.kind == ListKind::Ordered && indent.is_some())
+        .then(|| format!("o2p-list-tab-{list_id}-{root_level}"));
     write_list_open(
         out,
         "#",
         &style,
         fallback_marker_style.as_ref(),
         indent,
+        tab_shift_state.as_deref(),
+        default_tab_width_pt,
         spacing_pt,
         start_at,
     );
@@ -444,6 +521,8 @@ pub(super) fn generate_list_with_spacing_model(
         wrapper_spans_full_line,
         spacing_pt.is_some() || !per_item_gaps,
         per_item_gaps,
+        list_id,
+        default_tab_width_pt,
         &eojeol_wrap,
     )?;
     out.push_str(")\n");
@@ -1401,8 +1480,22 @@ fn write_list_item_trailing_gap(
 /// against the *list's* fixed line box: whatever
 /// [`generate_list_with_spacing_model`] put in force on the wrapper is what a
 /// framed eojeol has to restore inside itself (issue #626).
-fn write_list_item_content(out: &mut String, item: &crate::ir::ListItem, wrap: &ListEojeolWrap) {
-    for para in &item.content {
+fn write_list_item_content(
+    out: &mut String,
+    item: &crate::ir::ListItem,
+    wrap: &ListEojeolWrap,
+    tab_shift_state: Option<&str>,
+) {
+    for (index, para) in item.content.iter().enumerate() {
+        if index == 0
+            && let Some(tab_shift_state) = tab_shift_state
+        {
+            let _ = write!(
+                out,
+                "#context {{ h(state(\"{}\", 0pt).get()) }}",
+                escape_typst_string(tab_shift_state)
+            );
+        }
         generate_runs(
             out,
             &para.runs,
@@ -1439,9 +1532,14 @@ fn generate_list_items(
     wrapper_spans_full_line: bool,
     has_uniform_spacing: bool,
     per_item_gaps: bool,
+    list_id: usize,
+    default_tab_width_pt: f64,
     eojeol_wrap: &ListEojeolWrap,
 ) -> Result<(), ConvertError> {
     let style = list_style_for_level(list, base_level);
+    let tab_shift_state = (style.kind == ListKind::Ordered
+        && common_list_level_indent(items, base_level).is_some())
+    .then(|| format!("o2p-list-tab-{list_id}-{base_level}"));
     let (_, item_func) = list_funcs(style.kind);
     let mut i = 0;
     while i < items.len() {
@@ -1454,7 +1552,7 @@ fn generate_list_items(
             let _ = write!(out, "({start_at})");
         }
         out.push('[');
-        write_list_item_content(out, item, eojeol_wrap);
+        write_list_item_content(out, item, eojeol_wrap, tab_shift_state.as_deref());
 
         if item.level == base_level {
             let nested_start = i + 1;
@@ -1485,13 +1583,8 @@ fn generate_list_items(
                 let parent_indent = common_list_level_indent(&items[i..=i], base_level);
                 let indent =
                     common_list_level_indent(&items[nested_start..nested_end], base_level + 1).map(
-                        |mut child| {
-                            if let Some(parent) = parent_indent {
-                                child.marker_origin_pt = (child.marker_origin_pt
-                                    - (parent.marker_origin_pt + parent.marker_width_pt))
-                                    .max(0.0);
-                            }
-                            child
+                        |child| {
+                            parent_indent.map_or(child, |parent| nested_list_indent(child, parent))
                         },
                     );
                 // PowerPoint's a:spcAft belongs to the item that declares it.
@@ -1508,6 +1601,9 @@ fn generate_list_items(
                     )
                 };
                 let nested_start_at = items[nested_start].start_at;
+                let nested_tab_shift_state = (nested_style.kind == ListKind::Ordered
+                    && indent.is_some())
+                .then(|| format!("o2p-list-tab-{list_id}-{}", base_level + 1));
                 if let Some(gap) = nested_gap {
                     // `#v` immediately after inline parent text creates a new
                     // line of its own before the nested list. Block spacing
@@ -1521,6 +1617,8 @@ fn generate_list_items(
                     &nested_style,
                     fallback_marker_style.as_ref(),
                     indent,
+                    nested_tab_shift_state.as_deref(),
+                    default_tab_width_pt,
                     spacing_pt,
                     nested_start_at,
                 );
@@ -1532,6 +1630,8 @@ fn generate_list_items(
                     wrapper_spans_full_line,
                     spacing_pt.is_some() || !per_item_gaps,
                     per_item_gaps,
+                    list_id,
+                    default_tab_width_pt,
                     eojeol_wrap,
                 )?;
                 out.push(')');

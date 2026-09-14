@@ -19,15 +19,15 @@ use crate::parser::Parser;
 #[cfg(test)]
 use self::contexts::scan_table_headers;
 use self::contexts::{
-    BidiContext, ChartContext, DocxConversionContext, DrawingShapeContext, DrawingTextBoxContext,
-    DrawingTextBoxInfo, FieldContext, MathContext, NoteContent, NoteContext,
-    ParagraphShadingContext, SmallCapsContext, TableHeaderContext, TableStyleContext,
-    VmlTextBoxContext, VmlTextBoxInfo, WordWrapContext, WpgDrawingInfo, WrapContext,
-    build_chart_context_from_xml, build_math_context_from_xml, build_note_context_from_xml,
-    build_wrap_context_from_xml, extract_column_layout_from_section_property,
-    is_note_reference_run, read_zip_text, scan_column_layouts, scan_page_numbering,
-    scan_style_paragraph_shading, scan_style_word_wrap, seq_identifier, toc_caption_identifier,
-    toc_heading_depth,
+    BidiContext, ChartContext, ContextualSpacingContext, DocxConversionContext,
+    DrawingShapeContext, DrawingTextBoxContext, DrawingTextBoxInfo, FieldContext, MathContext,
+    NoteContent, NoteContext, ParagraphContextualSpacing, ParagraphShadingContext,
+    SmallCapsContext, TableHeaderContext, TableStyleContext, VmlTextBoxContext, VmlTextBoxInfo,
+    WordWrapContext, WpgDrawingInfo, WrapContext, build_chart_context_from_xml,
+    build_math_context_from_xml, build_note_context_from_xml, build_wrap_context_from_xml,
+    extract_column_layout_from_section_property, is_note_reference_run, read_zip_text,
+    scan_column_layouts, scan_page_numbering, scan_style_paragraph_shading, scan_style_word_wrap,
+    seq_identifier, toc_caption_identifier, toc_heading_depth,
 };
 use self::lists::{
     NumberingMap, TaggedElement, build_numbering_map, extract_num_info, group_into_lists,
@@ -262,6 +262,11 @@ fn build_zip_preparse_assets(data: &[u8]) -> ZipPreParseAssets {
                 small_caps,
                 paragraph_shading: ParagraphShadingContext::from_xml(doc_xml.as_deref()),
                 word_wraps: WordWrapContext::from_xml(doc_xml.as_deref()),
+                contextual_spacing: ContextualSpacingContext::from_xml(
+                    doc_xml.as_deref(),
+                    styles_xml.as_deref(),
+                    default_paragraph_style_id.as_deref(),
+                ),
                 fields: FieldContext::default(),
             };
             ZipPreParseAssets {
@@ -297,6 +302,7 @@ fn build_zip_preparse_assets(data: &[u8]) -> ZipPreParseAssets {
                 small_caps: SmallCapsContext::from_xml(None),
                 paragraph_shading: ParagraphShadingContext::from_xml(None),
                 word_wraps: WordWrapContext::from_xml(None),
+                contextual_spacing: ContextualSpacingContext::from_xml(None, None, None),
                 fields: FieldContext::default(),
             },
             math: MathContext::empty(),
@@ -1000,13 +1006,14 @@ pub(super) enum ParagraphContainer {
 ///
 /// Resolved once per `<w:p>` because the bidi and shading cursors advance on
 /// read, then handed to every paragraph the `<w:p>` splits into.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct ParagraphFlow {
     is_rtl: bool,
     background: Option<Color>,
     /// The paragraph's own `w:wordWrap`, recovered from the raw XML — the
     /// published docx-rs does not parse it (issue #1041).
     word_wrap: Option<bool>,
+    contextual_spacing: ParagraphContextualSpacing,
     container: ParagraphContainer,
 }
 
@@ -1028,6 +1035,7 @@ fn convert_paragraph_blocks(
         is_rtl: ctx.bidi.next_is_bidi(),
         background: ctx.paragraph_shading.next_background(),
         word_wrap: ctx.word_wraps.next_word_wrap(),
+        contextual_spacing: ctx.contextual_spacing.next(),
         container,
     };
 
@@ -1122,7 +1130,7 @@ fn convert_paragraph_blocks(
                             out,
                             para,
                             resolved_style,
-                            flow,
+                            &flow,
                             &mut runs,
                             caption_identifier.as_deref(),
                         );
@@ -1151,7 +1159,7 @@ fn convert_paragraph_blocks(
                             out,
                             para,
                             resolved_style,
-                            flow,
+                            &flow,
                             &mut runs,
                             caption_identifier.as_deref(),
                         );
@@ -1233,7 +1241,7 @@ fn convert_paragraph_blocks(
             out,
             para,
             resolved_style,
-            flow,
+            &flow,
             &mut runs,
             caption_identifier.as_deref(),
         );
@@ -1309,13 +1317,15 @@ fn push_paragraph_from_runs(
     out: &mut Vec<Block>,
     para: &docx_rs::Paragraph,
     resolved_style: Option<&ResolvedStyle>,
-    flow: ParagraphFlow,
+    flow: &ParagraphFlow,
     runs: &mut Vec<Run>,
     caption_identifier: Option<&str>,
 ) {
     let mut explicit_para_style = extract_paragraph_style(&para.property);
     explicit_para_style.background = flow.background;
     explicit_para_style.word_wrap = flow.word_wrap;
+    explicit_para_style.paragraph_style_id = flow.contextual_spacing.style_id.clone();
+    explicit_para_style.contextual_spacing = flow.contextual_spacing.enabled;
     let explicit_tab_overrides = extract_tab_stop_overrides(&para.property.tabs);
     let mut style = merge_paragraph_style(
         &explicit_para_style,

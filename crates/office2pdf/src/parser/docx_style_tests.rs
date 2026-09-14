@@ -357,6 +357,44 @@ fn test_scan_default_paragraph_style_id_from_raw_styles_xml() {
 }
 
 #[test]
+fn contextual_spacing_is_suppressed_only_between_matching_paragraph_styles() {
+    let styles_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+  <w:style w:type="paragraph" w:styleId="ListBase">
+    <w:pPr><w:contextualSpacing/></w:pPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="ListParagraph"><w:basedOn w:val="ListBase"/></w:style>
+</w:styles>"#;
+    let document_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+  <w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:spacing w:before="80" w:after="200"/></w:pPr><w:r><w:t>One</w:t></w:r></w:p>
+  <w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:spacing w:before="80" w:after="200"/></w:pPr><w:r><w:t>Two</w:t></w:r></w:p>
+  <w:p><w:pPr><w:spacing w:before="80" w:after="200"/></w:pPr><w:r><w:t>Body</w:t></w:r></w:p>
+</w:body></w:document>"#;
+
+    let data = build_docx_with_styles_xml(document_xml, styles_xml);
+    let (doc, _warnings) = DocxParser.parse(&data, &ConvertOptions::default()).unwrap();
+    let paragraphs = collect_paragraphs(&doc);
+
+    assert_eq!(paragraphs.len(), 3);
+    assert_eq!(
+        paragraphs[0].style.paragraph_style_id.as_deref(),
+        Some("ListParagraph")
+    );
+    assert_eq!(paragraphs[0].style.contextual_spacing, Some(true));
+    assert_eq!(paragraphs[0].style.space_before, Some(4.0));
+    assert_eq!(paragraphs[0].style.space_after, Some(0.0));
+    assert_eq!(paragraphs[1].style.space_before, Some(0.0));
+    assert_eq!(paragraphs[1].style.space_after, Some(10.0));
+    assert_eq!(
+        paragraphs[2].style.paragraph_style_id.as_deref(),
+        Some("Normal")
+    );
+    assert_eq!(paragraphs[2].style.space_before, Some(4.0));
+}
+
+#[test]
 fn test_doc_default_theme_font_resolves_via_theme() {
     // docDefaults referencing asciiTheme="minorHAnsi" must resolve to the
     // theme's minor latin typeface instead of falling back to the renderer

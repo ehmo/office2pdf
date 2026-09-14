@@ -5,8 +5,8 @@ use crate::error::ConvertWarning;
 use crate::ir::{
     Block, BorderLineStyle, BorderSide, CellBorder, Color, ColumnLayout, FlowPage, FrameAnchor,
     HFInline, HeaderFooter, HeaderFooterFrame, HeaderFooterParagraph, Insets, Margins,
-    PageNumbering, PageSize, PositionedTab, PositionedTabAlignment, PositionedTabRelativeTo, Run,
-    TabLeader, TextDirection, TextStyle,
+    PageNumbering, PageSize, Paragraph, PositionedTab, PositionedTabAlignment,
+    PositionedTabRelativeTo, Run, TabLeader, TextDirection, TextStyle,
 };
 
 use super::contexts::WrapContext;
@@ -339,6 +339,88 @@ pub(super) struct SectionOverrides {
     pub(super) page_numbering: Option<PageNumbering>,
 }
 
+fn suppress_contextual_spacing(above: &mut Paragraph, below: &mut Paragraph) {
+    let same_style = matches!(
+        (&above.style.paragraph_style_id, &below.style.paragraph_style_id),
+        (Some(above_id), Some(below_id)) if above_id == below_id
+    );
+    if !same_style {
+        return;
+    }
+    if above.style.contextual_spacing == Some(true) {
+        above.style.space_after = Some(0.0);
+    }
+    if below.style.contextual_spacing == Some(true) {
+        below.style.space_before = Some(0.0);
+    }
+}
+
+fn normalize_paragraph_sequence(paragraphs: &mut [Paragraph]) {
+    for index in 1..paragraphs.len() {
+        let (above, below) = paragraphs.split_at_mut(index);
+        suppress_contextual_spacing(&mut above[index - 1], &mut below[0]);
+    }
+}
+
+fn first_paragraph(block: &mut Block) -> Option<&mut Paragraph> {
+    match block {
+        Block::Paragraph(paragraph) => Some(paragraph),
+        Block::Caption(caption) => Some(&mut caption.paragraph),
+        Block::List(list) => list.items.first_mut()?.content.first_mut(),
+        _ => None,
+    }
+}
+
+fn last_paragraph(block: &mut Block) -> Option<&mut Paragraph> {
+    match block {
+        Block::Paragraph(paragraph) => Some(paragraph),
+        Block::Caption(caption) => Some(&mut caption.paragraph),
+        Block::List(list) => list.items.last_mut()?.content.last_mut(),
+        _ => None,
+    }
+}
+
+fn normalize_contextual_spacing(blocks: &mut [Block]) {
+    for block in blocks.iter_mut() {
+        match block {
+            Block::List(list) => {
+                for item in &mut list.items {
+                    normalize_paragraph_sequence(&mut item.content);
+                }
+                for index in 1..list.items.len() {
+                    let (above, below) = list.items.split_at_mut(index);
+                    if let (Some(above), Some(below)) = (
+                        above[index - 1].content.last_mut(),
+                        below[0].content.first_mut(),
+                    ) {
+                        suppress_contextual_spacing(above, below);
+                    }
+                }
+            }
+            Block::Table(table) => {
+                for row in &mut table.rows {
+                    for cell in &mut row.cells {
+                        normalize_contextual_spacing(&mut cell.content);
+                    }
+                }
+            }
+            Block::FloatingTextBox(text_box) => {
+                normalize_contextual_spacing(&mut text_box.content);
+            }
+            _ => {}
+        }
+    }
+    for index in 1..blocks.len() {
+        let (above, below) = blocks.split_at_mut(index);
+        if let (Some(above), Some(below)) = (
+            last_paragraph(&mut above[index - 1]),
+            first_paragraph(&mut below[0]),
+        ) {
+            suppress_contextual_spacing(above, below);
+        }
+    }
+}
+
 pub(super) fn build_flow_page_from_section(
     section_prop: &docx_rs::SectionProperty,
     elements: Vec<TaggedElement>,
@@ -349,7 +431,8 @@ pub(super) fn build_flow_page_from_section(
     warnings: &mut Vec<ConvertWarning>,
 ) -> FlowPage {
     let (size, margins) = extract_page_setup(section_prop);
-    let content = group_into_lists(elements, numberings);
+    let mut content = group_into_lists(elements, numberings);
+    normalize_contextual_spacing(&mut content);
 
     for block in &content {
         if let Block::Chart(chart) = block {

@@ -1,3 +1,4 @@
+use super::lists::{ListIndentGeometry, nested_list_indent};
 use super::*;
 use std::collections::BTreeMap;
 
@@ -54,6 +55,58 @@ fn test_generate_bulleted_list() {
     assert!(output.source.contains("#list("));
     assert!(output.source.contains("Apple"));
     assert!(output.source.contains("Banana"));
+}
+
+#[test]
+fn explicit_zero_paragraph_spacing_overrides_typst_list_spacing() {
+    use crate::ir::List;
+
+    let make_item = |text: &str| ListItem {
+        content: vec![Paragraph {
+            style: ParagraphStyle {
+                space_after: Some(0.0),
+                line_spacing: Some(LineSpacing::Proportional(1.15)),
+                ..ParagraphStyle::default()
+            },
+            runs: vec![Run {
+                text: text.to_string(),
+                style: TextStyle {
+                    font_family: Some("Libertinus Serif".to_string()),
+                    ..TextStyle::default()
+                },
+                href: None,
+                footnote: None,
+            }],
+        }],
+        level: 0,
+        start_at: None,
+    };
+    let list = List {
+        kind: ListKind::Unordered,
+        items: vec![make_item("Apple"), make_item("Banana")],
+        level_styles: BTreeMap::new(),
+    };
+    let doc = make_doc(vec![Page::Flow(FlowPage {
+        first_header: None,
+        first_footer: None,
+        size: PageSize::default(),
+        margins: Margins::default(),
+        content: vec![Block::List(list)],
+        header: None,
+        footer: None,
+        columns: None,
+        line_grid_pitch: None,
+        line_grid_snaps_lines: false,
+        page_numbering: None,
+    })]);
+
+    let output = generate_typst(&doc).unwrap();
+
+    assert!(
+        output.source.contains("spacing: 0pt"),
+        "an explicit zero must suppress Typst's default list gap: {}",
+        output.source
+    );
 }
 
 #[test]
@@ -161,7 +214,7 @@ fn test_generate_numbered_list_preserves_hanging_indent_columns() {
 
     assert!(output.source.contains("indent: 18pt"));
     assert!(output.source.contains("body-indent: 0pt"));
-    assert!(output.source.contains("#box(width: 18pt"));
+    assert!(output.source.contains("box(width: 18pt"));
 }
 
 #[test]
@@ -195,6 +248,101 @@ fn test_generate_bulleted_list_preserves_nonstandard_hanging_indent_columns() {
     assert!(output.source.contains("indent: 30pt"));
     assert!(output.source.contains("body-indent: 0pt"));
     assert!(output.source.contains("marker: [#box(width: 15pt"));
+}
+
+#[test]
+fn nested_numbering_can_start_left_of_the_parent_body() {
+    let parent = ListIndentGeometry {
+        marker_origin_pt: 18.0,
+        marker_width_pt: 21.6,
+        absolute_marker_origin_pt: 18.0,
+    };
+    let child = ListIndentGeometry {
+        marker_origin_pt: 36.0,
+        marker_width_pt: 25.2,
+        absolute_marker_origin_pt: 36.0,
+    };
+
+    let relative = nested_list_indent(child, parent);
+
+    assert!(
+        (relative.marker_origin_pt - -3.6).abs() < 0.0001,
+        "a wider child marker must reach left of its parent's body origin"
+    );
+    assert!(
+        (relative.marker_width_pt - 25.2).abs() < 0.0001,
+        "the child keeps its complete hanging-indent marker column"
+    );
+    assert!(
+        (relative.absolute_marker_origin_pt - 36.0).abs() < 0.0001,
+        "suffix tabs still need the child's absolute marker origin"
+    );
+}
+
+#[test]
+fn overflowing_ordered_marker_advances_to_the_next_default_tab_stop() {
+    use crate::ir::{List, ListLevelStyle};
+
+    let list = List {
+        kind: ListKind::Ordered,
+        items: vec![ListItem {
+            content: vec![Paragraph {
+                style: ParagraphStyle {
+                    indent_left: Some(126.0),
+                    indent_first_line: Some(-18.0),
+                    ..ParagraphStyle::default()
+                },
+                runs: vec![Run {
+                    text: "Body".to_string(),
+                    style: TextStyle::default(),
+                    href: None,
+                    footnote: None,
+                }],
+            }],
+            level: 0,
+            start_at: Some(1),
+        }],
+        level_styles: BTreeMap::from([(
+            0,
+            ListLevelStyle {
+                kind: ListKind::Ordered,
+                numbering_pattern: Some("1.1.1.".to_string()),
+                full_numbering: true,
+                marker_text: None,
+                marker_style: None,
+            },
+        )]),
+    };
+    let source = generate_typst(&make_doc(vec![make_flow_page(vec![Block::List(list)])]))
+        .unwrap()
+        .source;
+
+    assert!(
+        source.contains("numbering: (..nums) => context {"),
+        "{source}"
+    );
+    assert!(
+        source.contains("let marker_width = measure(marker).width"),
+        "{source}"
+    );
+    assert!(
+        source.contains("calc.rem-euclid((108pt + marker_width).abs.pt(), 36)"),
+        "{source}"
+    );
+    assert!(
+        source
+            .contains("if marker_width <= 18pt { 0pt } else { marker_width + tab_advance - 18pt }"),
+        "{source}"
+    );
+    assert!(
+        source.contains("state(\"o2p-list-tab-0-0\", 0pt).update(tab_shift)"),
+        "{source}"
+    );
+    assert!(source.contains("box(width: 18pt"), "{source}");
+    assert!(
+        source.contains("#context { h(state(\"o2p-list-tab-0-0\", 0pt).get()) }Body"),
+        "{source}"
+    );
 }
 
 #[test]

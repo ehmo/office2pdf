@@ -113,6 +113,7 @@ struct GenCtx {
     images: Vec<ImageAsset>,
     next_image_id: usize,
     next_text_box_id: usize,
+    next_list_id: usize,
     table_depth: usize,
     /// Active section's Word document-grid line pitch, in points.
     line_grid_pitch: Option<f64>,
@@ -201,6 +202,7 @@ impl GenCtx {
             images: Vec::new(),
             next_image_id: 0,
             next_text_box_id: 0,
+            next_list_id: 0,
             table_depth: 0,
             table_uses_powerpoint_line_box: false,
             line_grid_pitch: None,
@@ -236,6 +238,12 @@ impl GenCtx {
     fn next_text_box_id(&mut self) -> usize {
         let id = self.next_text_box_id;
         self.next_text_box_id += 1;
+        id
+    }
+
+    fn next_list_id(&mut self) -> usize {
+        let id = self.next_list_id;
+        self.next_list_id += 1;
         id
     }
 }
@@ -2843,10 +2851,13 @@ fn generate_block(out: &mut String, block: &Block, ctx: &mut GenCtx) -> Result<(
             let line_box_em: Option<(f64, f64)> = first_paragraph.and_then(|paragraph| {
                 word_line_box_em(&paragraph.runs, &paragraph.style, ctx.line_grid_pitch)
             });
+            let list_id = ctx.next_list_id();
             generate_list(
                 out,
                 list,
                 settings.as_deref(),
+                list_id,
+                ctx.default_tab_width_pt,
                 ListEojeolWrap {
                     breaks_hangul_at_eojeol: ctx.breaks_hangul_at_eojeol,
                     line_box_em,
@@ -3338,11 +3349,14 @@ fn generate_fixed_text_box_block(
                     powerpoint_line_height_settings(&paragraph.runs, &paragraph.style)
                 });
             // A slide's own breaking; PowerPoint splits Korean mid-word.
+            let list_id = ctx.next_list_id();
             generate_list_with_spacing_model(
                 out,
                 list,
                 settings.as_deref(),
                 true,
+                list_id,
+                ctx.default_tab_width_pt,
                 ListEojeolWrap::default(),
             )
         }

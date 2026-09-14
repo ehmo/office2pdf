@@ -194,6 +194,8 @@ fn paragraph_style_merge_from_all_none_source_preserves_target() {
         }),
         space_before: Some(6.0),
         space_after: Some(12.0),
+        paragraph_style_id: Some("Body".to_string()),
+        contextual_spacing: Some(true),
         heading_level: Some(2),
         direction: Some(TextDirection::Rtl),
         tab_stops: Some(vec![TabStop {
@@ -245,6 +247,8 @@ fn paragraph_style_merge_from_all_some_source_overwrites_target() {
         }),
         space_before: Some(8.0),
         space_after: Some(16.0),
+        paragraph_style_id: Some("ListParagraph".to_string()),
+        contextual_spacing: Some(true),
         heading_level: Some(1),
         direction: Some(TextDirection::Rtl),
         background: Some(Color::new(0xF4, 0xF4, 0xF4)),
@@ -267,6 +271,8 @@ fn paragraph_style_merge_from_all_some_source_overwrites_target() {
     assert_eq!(target.line_box, source.line_box);
     assert_eq!(target.space_before, Some(8.0));
     assert_eq!(target.space_after, Some(16.0));
+    assert_eq!(target.paragraph_style_id.as_deref(), Some("ListParagraph"));
+    assert_eq!(target.contextual_spacing, Some(true));
     assert_eq!(target.heading_level, Some(1));
     assert_eq!(target.direction, Some(TextDirection::Rtl));
     assert_eq!(target.default_tab_stop_pt, Some(72.0));

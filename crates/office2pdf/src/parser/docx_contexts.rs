@@ -4,6 +4,8 @@ mod bidi;
 mod chart;
 #[path = "docx_context_columns.rs"]
 mod columns;
+#[path = "docx_context_contextual_spacing.rs"]
+mod contextual_spacing;
 #[path = "docx_context_shape.rs"]
 mod docx_context_shape;
 #[path = "docx_context_drawing.rs"]
@@ -34,6 +36,7 @@ mod wrap;
 pub(super) use bidi::BidiContext;
 pub(super) use chart::{ChartContext, build_chart_context_from_xml};
 pub(super) use columns::{extract_column_layout_from_section_property, scan_column_layouts};
+pub(super) use contextual_spacing::{ContextualSpacingContext, ParagraphContextualSpacing};
 pub(super) use docx_context_shape::{DrawingShapeContext, WpgDrawingInfo};
 pub(super) use drawing::{DrawingTextBoxContext, DrawingTextBoxInfo};
 pub(super) use fields::{FieldContext, seq_identifier, toc_caption_identifier, toc_heading_depth};
@@ -68,5 +71,6 @@ pub(super) struct DocxConversionContext {
     pub(super) small_caps: SmallCapsContext,
     pub(super) paragraph_shading: ParagraphShadingContext,
     pub(super) word_wraps: WordWrapContext,
+    pub(super) contextual_spacing: ContextualSpacingContext,
     pub(super) fields: FieldContext,
 }

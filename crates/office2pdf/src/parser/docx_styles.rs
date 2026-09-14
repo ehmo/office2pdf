@@ -424,6 +424,8 @@ pub(super) fn merge_paragraph_style(
         space_after: explicit
             .space_after
             .or(style_paragraph.and_then(|style| style.space_after)),
+        paragraph_style_id: explicit.paragraph_style_id.clone(),
+        contextual_spacing: explicit.contextual_spacing,
         heading_level: style
             .and_then(|resolved_style| resolved_style.heading_level)
             .map(|level| (level + 1) as u8),
