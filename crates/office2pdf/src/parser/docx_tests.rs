@@ -141,13 +141,20 @@ fn build_docx_with_numbering(
 #[test]
 fn test_parse_simple_bulleted_list() {
     // Create a bullet list: abstractNum with format "bullet", numId=1, ilvl=0
-    let abstract_num = docx_rs::AbstractNumbering::new(0).add_level(docx_rs::Level::new(
-        0,
-        docx_rs::Start::new(1),
-        docx_rs::NumberFormat::new("bullet"),
-        docx_rs::LevelText::new("•"),
-        docx_rs::LevelJc::new("left"),
-    ));
+    let abstract_num = docx_rs::AbstractNumbering::new(0).add_level(
+        docx_rs::Level::new(
+            0,
+            docx_rs::Start::new(1),
+            docx_rs::NumberFormat::new("bullet"),
+            docx_rs::LevelText::new("•"),
+            docx_rs::LevelJc::new("left"),
+        )
+        .fonts(docx_rs::RunFonts::new().ascii("Cambria"))
+        .size(20)
+        .bold()
+        .italic()
+        .color("123456"),
+    );
     let numbering = docx_rs::Numbering::new(1, 0);
 
     let data = build_docx_with_numbering(
@@ -193,7 +200,14 @@ fn test_parse_simple_bulleted_list() {
             numbering_pattern: None,
             full_numbering: false,
             marker_text: Some("•".to_string()),
-            marker_style: None,
+            marker_style: Some(TextStyle {
+                font_family: Some("Cambria".to_string()),
+                font_size: Some(10.0),
+                bold: Some(true),
+                italic: Some(true),
+                color: Some(Color::new(0x12, 0x34, 0x56)),
+                ..TextStyle::default()
+            }),
         })
     );
 

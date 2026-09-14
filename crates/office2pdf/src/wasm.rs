@@ -40,11 +40,16 @@ pub fn inspect_font(data: &[u8], codepoints: &[u32]) -> Result<String, JsValue> 
     if data.is_empty() || data.len() > 16 * 1024 * 1024 || codepoints.len() > 4096 {
         return Err(JsValue::from_str("font_inspection_limit"));
     }
-    if codepoints.iter().any(|point| char::from_u32(*point).is_none()) {
+    if codepoints
+        .iter()
+        .any(|point| char::from_u32(*point).is_none())
+    {
         return Err(JsValue::from_str("font_inspection_scalar"));
     }
     let count = if data.starts_with(b"ttcf") {
-        let raw = data.get(8..12).ok_or_else(|| JsValue::from_str("font_inspection_input"))?;
+        let raw = data
+            .get(8..12)
+            .ok_or_else(|| JsValue::from_str("font_inspection_input"))?;
         u32::from_be_bytes(raw.try_into().unwrap())
     } else {
         1
@@ -62,21 +67,27 @@ pub fn inspect_font(data: &[u8], codepoints: &[u32]) -> Result<String, JsValue> 
             return Err(JsValue::from_str("font_inspection_limit"));
         }
         let raw = font.ttf().raw_face();
-        let fs_type = raw.table_records.into_iter()
+        let fs_type = raw
+            .table_records
+            .into_iter()
             .find(|record| record.tag.to_bytes() == *b"OS/2")
             .and_then(|record| raw.table(record.tag))
             .and_then(|table| table.get(8..10))
             .map(|flags| u16::from_be_bytes([flags[0], flags[1]]));
-        let coverage: Vec<bool> = codepoints.iter().map(|point| {
-            font.ttf().glyph_index(char::from_u32(*point).unwrap())
-                .is_some_and(|glyph| glyph.0 != 0)
-        }).collect();
+        let coverage: Vec<bool> = codepoints
+            .iter()
+            .map(|point| {
+                font.ttf()
+                    .glyph_index(char::from_u32(*point).unwrap())
+                    .is_some_and(|glyph| glyph.0 != 0)
+            })
+            .collect();
         faces.push(serde_json::json!({"index": index, "family": info.family,
             "variant": info.variant, "fsType": fs_type, "coverage": coverage}));
     }
     serde_json::to_string(&serde_json::json!({"schemaVersion": 1,
         "coverageKind": "cmap-only", "codepoints": codepoints, "faces": faces}))
-        .map_err(|_| JsValue::from_str("font_inspection_result"))
+    .map_err(|_| JsValue::from_str("font_inspection_result"))
 }
 
 /// Structured warning returned by the result-bearing WASM API.
@@ -204,7 +215,9 @@ impl ConversionResult {
     }
 
     #[wasm_bindgen(getter, js_name = reviewedFontChoices)]
-    pub fn reviewed_font_choices(&self) -> Option<String> { self.reviewed_font_choices.clone() }
+    pub fn reviewed_font_choices(&self) -> Option<String> {
+        self.reviewed_font_choices.clone()
+    }
 
     #[wasm_bindgen(getter, js_name = warningCount)]
     pub fn warning_count(&self) -> usize {
@@ -286,26 +299,34 @@ impl Office2PdfConverter {
         if data.is_empty() || data.len() > 1024 * 1024 {
             return Err(JsValue::from_str("font_requests_input"));
         }
-        let (doc, warnings) = crate::parser::docx::DocxParser.parse(data, &self.options)
+        let (doc, warnings) = crate::parser::docx::DocxParser
+            .parse(data, &self.options)
             .map_err(|_| JsValue::from_str("font_requests_parse"))?;
-        let inventory = crate::docx_font_requests::inspect(&doc)
-            .map_err(JsValue::from_str)?;
-        let requests: Vec<_> = inventory.requests.iter().map(|(key, points)| {
-            serde_json::json!({"family": key.family, "bold": key.bold,
+        let inventory = crate::docx_font_requests::inspect(&doc).map_err(JsValue::from_str)?;
+        let requests: Vec<_> = inventory
+            .requests
+            .iter()
+            .map(|(key, points)| {
+                serde_json::json!({"family": key.family, "bold": key.bold,
                 "italic": key.italic, "codepoints": points})
-        }).collect();
+            })
+            .collect();
         serde_json::to_string(&serde_json::json!({"schemaVersion": 1,
             "kind": "parsed-docx-run-requests", "requests": requests,
             "gaps": inventory.gaps, "warningCount": warnings.len(),
             "runCount": inventory.runs, "scalarCount": inventory.scalars,
             "complete": inventory.gaps.is_empty() && warnings.is_empty()}))
-            .map_err(|_| JsValue::from_str("font_requests_result"))
+        .map_err(|_| JsValue::from_str("font_requests_result"))
     }
 
     /// Convert DOCX with a complete, reviewed family and variant selection.
     /// The receipt proves application before layout, not independent shaping.
     #[wasm_bindgen(js_name = convertReviewedDocxToPdf)]
-    pub fn convert_reviewed_docx_to_pdf(&self, data: &[u8], choices: &str) -> Result<ConversionResult, JsValue> {
+    pub fn convert_reviewed_docx_to_pdf(
+        &self,
+        data: &[u8],
+        choices: &str,
+    ) -> Result<ConversionResult, JsValue> {
         #[derive(serde::Deserialize, serde::Serialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Selected {
@@ -317,17 +338,28 @@ impl Office2PdfConverter {
         if data.is_empty() || data.len() > 1024 * 1024 || choices.len() > 256 * 1024 {
             return Err(JsValue::from_str("font_choices_input"));
         }
-        let selected: Vec<Selected> = serde_json::from_str(choices)
-            .map_err(|_| JsValue::from_str("font_choices_input"))?;
-        if selected.len() > 128 { return Err(JsValue::from_str("font_choices_limit")); }
-        let applied: Vec<_> = selected.iter().map(|item| crate::docx_font_choices::Choice {
-            source_family: item.source_family.clone(), bold: item.bold,
-            italic: item.italic, family: item.family.clone(),
-        }).collect();
-        let mut result: ConversionResult = crate::pipeline::convert_reviewed_docx_bytes(data, &self.options, &applied)
-            .map(Into::into).map_err(|_| JsValue::from_str("font_choices_conversion"))?;
-        result.reviewed_font_choices = Some(serde_json::to_string(&selected)
-            .map_err(|_| JsValue::from_str("font_choices_result"))?);
+        let selected: Vec<Selected> =
+            serde_json::from_str(choices).map_err(|_| JsValue::from_str("font_choices_input"))?;
+        if selected.len() > 128 {
+            return Err(JsValue::from_str("font_choices_limit"));
+        }
+        let applied: Vec<_> = selected
+            .iter()
+            .map(|item| crate::docx_font_choices::Choice {
+                source_family: item.source_family.clone(),
+                bold: item.bold,
+                italic: item.italic,
+                family: item.family.clone(),
+            })
+            .collect();
+        let mut result: ConversionResult =
+            crate::pipeline::convert_reviewed_docx_bytes(data, &self.options, &applied)
+                .map(Into::into)
+                .map_err(|_| JsValue::from_str("font_choices_conversion"))?;
+        result.reviewed_font_choices = Some(
+            serde_json::to_string(&selected)
+                .map_err(|_| JsValue::from_str("font_choices_result"))?,
+        );
         Ok(result)
     }
 

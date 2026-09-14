@@ -220,7 +220,9 @@ fn convert_bytes_with_docx_choices(
         Format::Xlsx => Box::new(parser::xlsx::XlsxParser),
         #[allow(unreachable_patterns)]
         _ => {
-            return Err(ConvertError::UnsupportedFormat(format_label(format).to_string()));
+            return Err(ConvertError::UnsupportedFormat(
+                format_label(format).to_string(),
+            ));
         }
     };
 
@@ -240,18 +242,31 @@ fn convert_bytes_with_docx_choices(
     let page_count = doc.pages.len() as u32;
     if let Some(choices) = choices {
         use typst::text::{FontStretch, FontStyle};
-        if !warnings.is_empty() { return Err(ConvertError::Parse("font_choices_parse_warning".into())); }
+        if !warnings.is_empty() {
+            return Err(ConvertError::Parse("font_choices_parse_warning".into()));
+        }
         crate::docx_font_choices::apply(&mut doc, choices, |choice, points| {
             additional_fonts.iter().any(|font| {
                 let info = font.info();
                 info.family.eq_ignore_ascii_case(&choice.family)
                     && info.variant.weight.to_number() == if choice.bold { 700 } else { 400 }
-                    && info.variant.style == if choice.italic { FontStyle::Italic } else { FontStyle::Normal }
+                    && info.variant.style
+                        == if choice.italic {
+                            FontStyle::Italic
+                        } else {
+                            FontStyle::Normal
+                        }
                     && info.variant.stretch == FontStretch::NORMAL
-                    && points.iter().all(|point| char::from_u32(*point).is_some_and(|scalar|
-                        font.ttf().glyph_index(scalar).is_some_and(|glyph| glyph.0 != 0)))
+                    && points.iter().all(|point| {
+                        char::from_u32(*point).is_some_and(|scalar| {
+                            font.ttf()
+                                .glyph_index(scalar)
+                                .is_some_and(|glyph| glyph.0 != 0)
+                        })
+                    })
             })
-        }).map_err(|message| ConvertError::Parse(message.into()))?;
+        })
+        .map_err(|message| ConvertError::Parse(message.into()))?;
     }
 
     #[cfg(not(target_arch = "wasm32"))]

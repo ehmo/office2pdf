@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::ir::{Block, List, ListItem, ListKind, ListLevelStyle, Paragraph, ParagraphStyle, Run};
+use crate::ir::{
+    Block, List, ListItem, ListKind, ListLevelStyle, Paragraph, ParagraphStyle, Run, TextStyle,
+};
 
 /// Numbering info extracted from a paragraph's numPr.
 #[derive(Debug, Clone)]
@@ -32,6 +34,7 @@ struct RawListLevel {
     number_format: String,
     level_text: String,
     paragraph_style: ParagraphStyle,
+    marker_style: Option<TextStyle>,
     has_start_override: bool,
 }
 
@@ -133,6 +136,10 @@ fn extract_raw_level(level: &docx_rs::Level) -> RawListLevel {
         number_format: level.format.val.clone(),
         level_text: serialize_string(&level.text).unwrap_or_default(),
         paragraph_style: super::text::extract_paragraph_style(&level.paragraph_property),
+        marker_style: {
+            let style = super::text::extract_run_style(&level.run_property);
+            (style != TextStyle::default()).then_some(style)
+        },
         has_start_override: false,
     }
 }
@@ -175,6 +182,7 @@ fn resolve_numbering(
                     number_format: "decimal".to_string(),
                     level_text: format!("%{}.", level_index + 1),
                     paragraph_style: ParagraphStyle::default(),
+                    marker_style: None,
                     has_start_override: true,
                 });
         }
@@ -207,7 +215,7 @@ fn resolve_numbering(
                         marker_text: (kind == ListKind::Unordered)
                             .then(|| level.level_text.clone())
                             .filter(|text| !text.is_empty()),
-                        marker_style: None,
+                        marker_style: level.marker_style.clone(),
                     },
                     paragraph_style: level.paragraph_style.clone(),
                     start: level.start,

@@ -41,10 +41,10 @@
 pub(crate) mod bundled_fonts;
 pub mod config;
 pub(crate) mod defaults;
+mod docx_font_choices;
+mod docx_font_requests;
 pub mod error;
 pub mod ir;
-mod docx_font_requests;
-mod docx_font_choices;
 pub(crate) mod parser;
 #[cfg(feature = "pdf-ops")]
 pub mod pdf_ops;

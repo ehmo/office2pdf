@@ -1248,14 +1248,11 @@ fn scan_hf_anchors(xml: &str, theme_colors: &HashMap<String, Color>) -> Vec<HfAn
                 }
                 b"custGeom" => {
                     #[cfg(feature = "format-pptx")]
-                    let subpaths = crate::parser::pptx::custom_geometry::parse_custom_geometry(
-                        &mut reader,
-                    );
+                    let subpaths =
+                        crate::parser::pptx::custom_geometry::parse_custom_geometry(&mut reader);
                     #[cfg(not(feature = "format-pptx"))]
                     let subpaths =
-                        crate::parser::docx_custom_geometry::parse_custom_geometry(
-                            &mut reader,
-                        );
+                        crate::parser::docx_custom_geometry::parse_custom_geometry(&mut reader);
                     if let Some(anchor) = current.as_mut()
                         && !subpaths.is_empty()
                     {
