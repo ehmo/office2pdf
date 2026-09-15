@@ -491,12 +491,45 @@ impl Parser for DocxParser {
 fn extract_default_tab_stop_pt(data: &[u8]) -> Option<f64> {
     let mut archive = crate::parser::open_zip(data).ok()?;
     let settings_xml: String = read_zip_text(&mut archive, "word/settings.xml")?;
-    let element_start: usize = settings_xml.find("<w:defaultTabStop")?;
-    let rest: &str = &settings_xml[element_start..];
-    let value_start: usize = rest.find("w:val=\"")? + 7;
-    let value_end: usize = rest[value_start..].find('"')? + value_start;
-    let twips: f64 = rest[value_start..value_end].parse().ok()?;
-    (twips > 0.0).then_some(twips / 20.0)
+    let mut reader = quick_xml::NsReader::from_reader(settings_xml.as_bytes());
+    let mut buffer: Vec<u8> = Vec::new();
+    const WORDPROCESSINGML_NAMESPACE: &[u8] =
+        b"http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+    loop {
+        buffer.clear();
+        let (namespace, event) = reader.read_resolved_event_into(&mut buffer).ok()?;
+        match event {
+            quick_xml::events::Event::Start(element) | quick_xml::events::Event::Empty(element)
+                if matches!(
+                    namespace,
+                    quick_xml::name::ResolveResult::Bound(ref namespace)
+                        if namespace.as_ref() == WORDPROCESSINGML_NAMESPACE
+                ) && element.local_name().as_ref() == b"defaultTabStop" =>
+            {
+                for attribute in element.attributes().flatten() {
+                    let (namespace, local_name) = reader.resolve_attribute(attribute.key);
+                    if !matches!(
+                        namespace,
+                        quick_xml::name::ResolveResult::Bound(ref namespace)
+                            if namespace.as_ref() == WORDPROCESSINGML_NAMESPACE
+                    ) || local_name.as_ref() != b"val"
+                    {
+                        continue;
+                    }
+                    let twips: f64 = attribute
+                        .decode_and_unescape_value(reader.decoder())
+                        .ok()?
+                        .parse()
+                        .ok()?;
+                    return (twips > 0.0).then_some(twips / 20.0);
+                }
+                return None;
+            }
+            quick_xml::events::Event::Eof => return None,
+            _ => {}
+        }
+    }
 }
 
 /// Extract content from a StructuredDataTag (SDT), processing its paragraph

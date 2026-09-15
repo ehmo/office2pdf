@@ -1276,6 +1276,32 @@ fn test_zero_indent_numbering_renders_inline_number_with_tab() {
 
 /// Rewrites `word/settings.xml` inside a DOCX, replacing the
 /// `w:defaultTabStop` element with `replacement` (empty string removes it).
+fn rewrite_zip_xml_entry(
+    docx_bytes: &[u8],
+    entry_name: &str,
+    rewrite: impl FnOnce(&str) -> String,
+) -> Vec<u8> {
+    let mut rewrite = Some(rewrite);
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(docx_bytes.to_vec())).expect("read zip");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).expect("zip entry");
+        let name: String = file.name().to_string();
+        let mut content: Vec<u8> = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut content).expect("read entry");
+        if name == entry_name {
+            let xml = String::from_utf8(content).expect("xml utf8");
+            content = rewrite.take().expect("entry rewritten once")(&xml).into_bytes();
+        }
+        out.start_file(name, zip::write::FileOptions::default())
+            .expect("start entry");
+        std::io::Write::write_all(&mut out, &content).expect("write entry");
+    }
+    assert!(rewrite.is_none(), "missing ZIP entry {entry_name}");
+    out.finish().expect("finish zip").into_inner()
+}
+
 fn rewrite_settings_default_tab_stop(docx_bytes: &[u8], replacement: &str) -> Vec<u8> {
     let mut archive =
         zip::ZipArchive::new(std::io::Cursor::new(docx_bytes.to_vec())).expect("read zip");
@@ -1314,6 +1340,26 @@ fn test_explicit_default_tab_stop_is_parsed() {
     let parser = DocxParser;
     let (doc, _warnings) = parser.parse(&data, &ConvertOptions::default()).unwrap();
     assert_eq!(doc.styles.default_tab_stop_pt, Some(40.0));
+}
+
+#[test]
+fn test_explicit_default_tab_stop_accepts_an_arbitrary_wordprocessingml_prefix() {
+    let data = build_docx_bytes(vec![
+        docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("body")),
+    ]);
+    let data = rewrite_settings_default_tab_stop(&data, r#"<w:defaultTabStop w:val="720"/>"#);
+    let data = rewrite_zip_xml_entry(&data, "word/settings.xml", |xml| {
+        xml.replace(
+            r#"xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#,
+            r#"xmlns:word="http://schemas.openxmlformats.org/wordprocessingml/2006/main""#,
+        )
+        .replace("<w:", "<word:")
+        .replace("</w:", "</word:")
+        .replace(" w:", " word:")
+    });
+    let parser = DocxParser;
+    let (doc, _warnings) = parser.parse(&data, &ConvertOptions::default()).unwrap();
+    assert_eq!(doc.styles.default_tab_stop_pt, Some(36.0));
 }
 
 #[test]
