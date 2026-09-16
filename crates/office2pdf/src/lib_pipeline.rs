@@ -164,12 +164,16 @@ pub(super) fn convert_bytes(
     convert_bytes_with_docx_choices(data, format, options, None)
 }
 
+/// Largest DOCX the reviewed font path accepts, in bytes. Mirrors the wasm
+/// boundary's own ceiling so a document refused there is refused here too.
+const REVIEWED_DOCX_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 pub(super) fn convert_reviewed_docx_bytes(
     data: &[u8],
     options: &ConvertOptions,
     choices: &[crate::docx_font_choices::Choice],
 ) -> Result<ConvertResult, ConvertError> {
-    if data.is_empty() || data.len() > 1024 * 1024 || options.streaming {
+    if data.is_empty() || data.len() > REVIEWED_DOCX_MAX_BYTES || options.streaming {
         return Err(ConvertError::Parse("font_choices_input".into()));
     }
     convert_bytes_with_docx_choices(data, Format::Docx, options, Some(choices))

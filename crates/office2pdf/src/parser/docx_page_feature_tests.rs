@@ -1251,3 +1251,318 @@ fn a_section_with_only_a_first_page_header_still_emits_it() {
         "a first-only header must still reach the page setup, got:\n{source}"
     );
 }
+
+// ----- `w:evenAndOddHeaders` selects the even-page stories -----
+
+fn build_docx_with_even_stories() -> Vec<u8> {
+    let default_header = docx_rs::Header::new().add_paragraph(
+        docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Odd page rail")),
+    );
+    // `Docx::even_header` switches `w:evenAndOddHeaders` on for you, which is
+    // the pairing Word writes; the test below drives the split pair straight
+    // off `SectionProperty`.
+    let even_header = docx_rs::Header::new().add_paragraph(
+        docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Even page rail")),
+    );
+    let mut cursor = Cursor::new(Vec::new());
+    docx_rs::Docx::new()
+        .header(default_header)
+        .even_header(even_header)
+        .add_paragraph(docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Body text")))
+        .build()
+        .pack(&mut cursor)
+        .unwrap();
+    cursor.into_inner()
+}
+
+#[test]
+fn even_and_odd_headers_keeps_the_even_story_apart() {
+    let data = build_docx_with_even_stories();
+    let (document, warnings) = DocxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("document parses");
+    let Some(crate::ir::Page::Flow(page)) = document.pages.first() else {
+        panic!("Expected FlowPage");
+    };
+
+    let even = page
+        .even_header
+        .as_ref()
+        .expect("evenAndOddHeaders must resolve an even-page header");
+    assert!(
+        header_footer_text(even).contains("Even page rail"),
+        "even pages take the `even` story, got {:?}",
+        header_footer_text(even)
+    );
+    let odd = page
+        .header
+        .as_ref()
+        .expect("odd pages keep the default header");
+    assert!(
+        header_footer_text(odd).contains("Odd page rail"),
+        "the default story must not be displaced by the even one, got {:?}",
+        header_footer_text(odd)
+    );
+    assert!(
+        warnings.is_empty(),
+        "an honoured even story is converted, not warned about, got {warnings:?}"
+    );
+}
+
+#[test]
+fn an_even_story_without_the_setting_is_ignored() {
+    // Triangulation: Word keeps the `even` references in the file after the
+    // setting is switched back off and then draws the default story on every
+    // page, so the references alone must not split the section.
+    //
+    // Driven off `SectionProperty` because `docx_rs::Docx::even_header`
+    // switches `w:evenAndOddHeaders` on for you, exactly as `first_header`
+    // sets `w:titlePg`.
+    let story = || {
+        docx_rs::Header::new().add_paragraph(
+            docx_rs::Paragraph::new().add_run(docx_rs::Run::new().add_text("Even page rail")),
+        )
+    };
+    let assets = super::sections::HeaderFooterAssets::default();
+    let declared = docx_rs::SectionProperty::new().even_header(story(), "rId9");
+
+    assert!(
+        super::sections::extract_docx_even_header(
+            &declared,
+            &assets,
+            super::sections::EvenPageStories::Honoured
+        )
+        .is_some(),
+        "the setting on resolves the even story"
+    );
+    assert!(
+        super::sections::extract_docx_even_header(
+            &declared,
+            &assets,
+            super::sections::EvenPageStories::Ignored
+        )
+        .is_none(),
+        "the setting off means the even story is not a story of its own"
+    );
+
+    // A section with no default story borrows the even one only while the
+    // setting is off; once it is on, borrowing it would draw it on odd pages
+    // too, which is the opposite of what the setting asks for.
+    assert!(
+        super::sections::extract_docx_header(
+            &declared,
+            &assets,
+            super::sections::EvenPageStories::Ignored
+        )
+        .is_some(),
+        "an ignored even story still stands in for a missing default"
+    );
+    assert!(
+        super::sections::extract_docx_header(
+            &declared,
+            &assets,
+            super::sections::EvenPageStories::Honoured
+        )
+        .is_none(),
+        "an honoured even story belongs to even pages alone"
+    );
+}
+
+#[test]
+fn an_even_page_header_is_emitted_as_a_per_page_choice() {
+    let data = build_docx_with_even_stories();
+    let (document, _warnings) = DocxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("document parses");
+    let source = crate::internal::generate_typst(&document)
+        .expect("document generates")
+        .source;
+
+    assert!(
+        source.contains("header: context { if calc.even(counter(page).at(here()).first())"),
+        "the header must choose on the printed page number, got:\n{source}"
+    );
+    let even = source.find("Even page rail").expect("even story present");
+    let odd = source.find("Odd page rail").expect("default story present");
+    assert!(
+        even < odd,
+        "the even story is the `if` branch and the default the `else`"
+    );
+}
+
+// ----- A continuous section break shares the previous page -----
+
+/// Two sections in one document, written as raw XML because docx-rs's builder
+/// cannot put a `w:sectPr` on a paragraph.
+fn build_docx_with_two_sections(first_type: &str, second_height_twips: u32) -> Vec<u8> {
+    use std::io::Write;
+    use zip::ZipWriter;
+    use zip::write::FileOptions;
+
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let opts = FileOptions::default();
+
+    zip.start_file("[Content_Types].xml", opts).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#,
+    )
+    .unwrap();
+
+    zip.start_file("_rels/.rels", opts).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#,
+    )
+    .unwrap();
+
+    zip.start_file("word/document.xml", opts).unwrap();
+    let document_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:pPr><w:sectPr>
+        <w:type w:val="{first_type}"/>
+        <w:pgSz w:w="11906" w:h="16838"/>
+        <w:cols w:num="1"/>
+      </w:sectPr></w:pPr>
+      <w:r><w:t xml:space="preserve">Section one</w:t></w:r>
+    </w:p>
+    <w:p><w:r><w:t xml:space="preserve">Section two</w:t></w:r></w:p>
+    <w:sectPr>
+      <w:type w:val="continuous"/>
+      <w:pgSz w:w="11906" w:h="{second_height_twips}"/>
+      <w:cols w:num="2" w:space="360"/>
+    </w:sectPr>
+  </w:body>
+</w:document>"#
+    );
+    zip.write_all(document_xml.as_bytes()).unwrap();
+
+    zip.finish().unwrap().into_inner()
+}
+
+/// Every run's text in a block tree, concatenated.
+fn block_text(blocks: &[crate::ir::Block]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            crate::ir::Block::Paragraph(paragraph) => Some(
+                paragraph
+                    .runs
+                    .iter()
+                    .map(|run| run.text.as_str())
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_continuous_section_shares_the_previous_page() {
+    let data = build_docx_with_two_sections("nextPage", 16838);
+    let (document, warnings) = DocxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("document parses");
+
+    assert_eq!(
+        document.pages.len(),
+        1,
+        "a continuous break takes no page of its own"
+    );
+    let Some(crate::ir::Page::Flow(page)) = document.pages.first() else {
+        panic!("Expected FlowPage");
+    };
+    assert!(
+        block_text(&page.content).contains("Section one"),
+        "the first section keeps the page's own content"
+    );
+    assert_eq!(page.continued.len(), 1, "one section was folded onto it");
+    assert!(
+        block_text(&page.continued[0].content).contains("Section two"),
+        "the continued section carries its own content"
+    );
+    assert_eq!(
+        page.continued[0]
+            .columns
+            .as_ref()
+            .expect("the continued section states its own columns")
+            .num_columns,
+        2,
+        "a continuous section may change the column count, and that is the \
+         one setting that survives the fold"
+    );
+    assert!(
+        warnings.is_empty(),
+        "a folded section is converted, not warned about, got {warnings:?}"
+    );
+}
+
+#[test]
+fn a_continuous_section_changing_the_sheet_takes_a_page() {
+    // Triangulation: one page carries one page setup, so Word starts a new
+    // page here too. Folding would silently resize the previous section.
+    let data = build_docx_with_two_sections("nextPage", 20000);
+    let (document, _warnings) = DocxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("document parses");
+
+    assert_eq!(
+        document.pages.len(),
+        2,
+        "a different sheet height keeps the page split"
+    );
+}
+
+#[test]
+fn a_first_section_marked_continuous_is_not_folded() {
+    // The document's first section has nothing to continue from, which is
+    // where most `continuous` values in real files sit.
+    let data = build_docx_with_two_sections("continuous", 16838);
+    let (document, _warnings) = DocxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("document parses");
+
+    assert_eq!(document.pages.len(), 1, "both sections share one page");
+    let Some(crate::ir::Page::Flow(page)) = document.pages.first() else {
+        panic!("Expected FlowPage");
+    };
+    assert!(
+        block_text(&page.content).contains("Section one"),
+        "the first section is the page, not something folded into one"
+    );
+    assert_eq!(page.continued.len(), 1, "only the second section folds");
+}
+
+#[test]
+fn a_folded_section_is_emitted_after_the_page_content() {
+    let data = build_docx_with_two_sections("nextPage", 16838);
+    let (document, _warnings) = DocxParser
+        .parse(&data, &ConvertOptions::default())
+        .expect("document parses");
+    let source = crate::internal::generate_typst(&document)
+        .expect("document generates")
+        .source;
+
+    let one = source.find("Section one").expect("first section present");
+    let two = source.find("Section two").expect("second section present");
+    assert!(one < two, "the folded section follows the page's content");
+    assert!(
+        !source[one..two].contains("#pagebreak()"),
+        "no page break separates them, got:\n{}",
+        &source[one..two]
+    );
+    assert!(
+        source[one..two].contains("#columns(2"),
+        "the folded section opens its own two-column scope, got:\n{}",
+        &source[one..two]
+    );
+}

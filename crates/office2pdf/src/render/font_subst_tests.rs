@@ -399,6 +399,9 @@ fn test_detect_missing_font_fallbacks_with_context_prefers_office_font() {
     let doc = Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),
@@ -523,6 +526,9 @@ fn korean_document_requesting(font_family: &str, text: &str) -> Document {
     Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),
@@ -555,6 +561,9 @@ fn test_document_requests_font_families_false_when_all_runs_use_defaults() {
     let doc = Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),
@@ -586,6 +595,9 @@ fn test_document_requests_font_families_false_for_context_free_arial() {
     let doc = Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),
@@ -620,6 +632,9 @@ fn test_document_requests_font_families_true_when_any_run_sets_family() {
     let doc = Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),
@@ -1039,6 +1054,9 @@ fn test_document_requests_font_families_true_for_a_chart_only_document() {
     let doc = Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),
@@ -1088,6 +1106,9 @@ fn test_document_requests_font_families_true_for_a_chart_only_document() {
     let doc = Document {
         metadata: crate::ir::Metadata::default(),
         pages: vec![Page::Flow(crate::ir::FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: crate::ir::PageSize::default(),

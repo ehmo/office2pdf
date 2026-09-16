@@ -4,6 +4,9 @@ pub(super) fn make_simple_document(text: &str) -> Document {
     Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),

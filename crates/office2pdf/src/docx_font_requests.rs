@@ -347,11 +347,16 @@ pub(crate) fn inspect(doc: &Document) -> Result<Inventory, &'static str> {
             continue;
         };
         out.blocks(&flow.content, 0)?;
+        for section in &flow.continued {
+            out.blocks(&section.content, 0)?;
+        }
         for story in [
             &flow.header,
             &flow.footer,
             &flow.first_header,
             &flow.first_footer,
+            &flow.even_header,
+            &flow.even_footer,
         ]
         .into_iter()
         .flatten()

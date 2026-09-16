@@ -39,6 +39,9 @@ fn test_generate_bulleted_list() {
         level_styles: BTreeMap::new(),
     };
     let doc = make_doc(vec![Page::Flow(FlowPage {
+        even_header: None,
+        even_footer: None,
+        continued: Vec::new(),
         first_header: None,
         first_footer: None,
         size: PageSize::default(),
@@ -87,6 +90,9 @@ fn explicit_zero_paragraph_spacing_overrides_typst_list_spacing() {
         level_styles: BTreeMap::new(),
     };
     let doc = make_doc(vec![Page::Flow(FlowPage {
+        even_header: None,
+        even_footer: None,
+        continued: Vec::new(),
         first_header: None,
         first_footer: None,
         size: PageSize::default(),
@@ -155,6 +161,9 @@ fn test_generate_numbered_list() {
         )]),
     };
     let doc = make_doc(vec![Page::Flow(FlowPage {
+        even_header: None,
+        even_footer: None,
+        continued: Vec::new(),
         first_header: None,
         first_footer: None,
         size: PageSize::default(),
@@ -670,6 +679,9 @@ fn test_generate_nested_list() {
         ]),
     };
     let doc = make_doc(vec![Page::Flow(FlowPage {
+        even_header: None,
+        even_footer: None,
+        continued: Vec::new(),
         first_header: None,
         first_footer: None,
         size: PageSize::default(),
@@ -727,6 +739,9 @@ fn test_nested_list_single_content_block() {
         level_styles: BTreeMap::new(),
     };
     let doc = make_doc(vec![Page::Flow(FlowPage {
+        even_header: None,
+        even_footer: None,
+        continued: Vec::new(),
         first_header: None,
         first_footer: None,
         size: PageSize::default(),

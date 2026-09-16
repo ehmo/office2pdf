@@ -32,7 +32,7 @@ pub enum Page {
 }
 
 /// Page dimensions.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PageSize {
     /// Width in points (1 pt = 1/72 inch).
     pub width: f64,
@@ -50,7 +50,7 @@ impl Default for PageSize {
 }
 
 /// Page margins in points.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Margins {
     pub top: f64,
     pub bottom: f64,
@@ -80,6 +80,19 @@ pub struct ColumnLayout {
     pub column_widths: Option<Vec<f64>>,
 }
 
+/// A section a continuous break placed on a page a previous section started.
+///
+/// It cannot be a [`FlowPage`] of its own: every flow page emits a `#set page`,
+/// and in Typst that rule starts the page it is supposed to stay on. Only the
+/// column layout survives the fold, because that is the setting Word lets a
+/// continuous section change without taking a new page.
+#[derive(Debug, Clone)]
+pub struct ContinuedSection {
+    /// The continued section's own `w:cols`, when it states a different one.
+    pub columns: Option<ColumnLayout>,
+    pub content: Vec<Block>,
+}
+
 /// A flowing-content page (DOCX).
 #[derive(Debug, Clone)]
 pub struct FlowPage {
@@ -94,6 +107,17 @@ pub struct FlowPage {
     pub first_header: Option<super::elements::HeaderFooter>,
     /// The footer this section's first page takes, under the same rule.
     pub first_footer: Option<super::elements::HeaderFooter>,
+    /// The header this section's **even-numbered** pages take, where
+    /// `word/settings.xml` carries `<w:evenAndOddHeaders/>`. `None` means every
+    /// page takes [`FlowPage::header`]. Without that setting Word ignores an
+    /// `even` story completely, so a section that declares one and does not
+    /// switch the setting on leaves this `None` too.
+    pub even_header: Option<super::elements::HeaderFooter>,
+    /// The footer this section's even-numbered pages take, under the same rule.
+    pub even_footer: Option<super::elements::HeaderFooter>,
+    /// Sections a continuous break folded onto this page, laid out in order
+    /// after [`FlowPage::content`].
+    pub continued: Vec<ContinuedSection>,
     /// Optional multi-column layout for the page.
     pub columns: Option<ColumnLayout>,
     /// Word document-grid line pitch in points (`w:docGrid w:linePitch`),

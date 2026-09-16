@@ -28,6 +28,9 @@ fn test_render_document_with_tab_leader() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -68,6 +71,9 @@ fn test_render_document_styled_text() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -120,6 +126,9 @@ fn test_render_document_multiple_flow_pages() {
         metadata: Metadata::default(),
         pages: vec![
             Page::Flow(FlowPage {
+                even_header: None,
+                even_footer: None,
+                continued: Vec::new(),
                 first_header: None,
                 first_footer: None,
                 size: PageSize::default(),
@@ -141,6 +150,9 @@ fn test_render_document_multiple_flow_pages() {
                 page_numbering: None,
             }),
             Page::Flow(FlowPage {
+                even_header: None,
+                even_footer: None,
+                continued: Vec::new(),
                 first_header: None,
                 first_footer: None,
                 size: PageSize::default(),
@@ -174,6 +186,9 @@ fn test_render_document_page_break() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -218,6 +233,9 @@ fn test_render_document_with_image() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -256,6 +274,9 @@ fn test_render_document_image_mixed_with_text() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -450,6 +471,9 @@ fn test_render_document_with_system_font_in_ir() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -485,6 +509,9 @@ fn test_render_document_with_multiple_font_families() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -531,6 +558,9 @@ fn test_render_document_with_list() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -588,6 +618,9 @@ fn test_render_document_with_header() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -635,6 +668,9 @@ fn test_render_document_with_page_number_footer() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
@@ -685,6 +721,9 @@ fn test_render_document_with_landscape_page() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize {
@@ -723,6 +762,9 @@ fn test_render_multipage_document_size() {
     let mut pages = Vec::new();
     for i in 1..=10 {
         pages.push(Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),

@@ -1090,8 +1090,16 @@ fn collect_document_font_requests(doc: &Document) -> BTreeSet<FontRequest> {
                 if let Some(footer) = &page.footer {
                     collect_header_footer_fonts(footer, &mut fonts);
                 }
+                for story in [&page.even_header, &page.even_footer].into_iter().flatten() {
+                    collect_header_footer_fonts(story, &mut fonts);
+                }
                 for block in &page.content {
                     collect_block_fonts(block, &mut fonts);
+                }
+                for section in &page.continued {
+                    for block in &section.content {
+                        collect_block_fonts(block, &mut fonts);
+                    }
                 }
             }
             Page::Fixed(page) => {
@@ -1145,7 +1153,19 @@ pub(crate) fn document_requests_font_families(doc: &Document) -> bool {
                     .footer
                     .as_ref()
                     .is_some_and(header_footer_requests_font_family)
+                || page
+                    .even_header
+                    .as_ref()
+                    .is_some_and(header_footer_requests_font_family)
+                || page
+                    .even_footer
+                    .as_ref()
+                    .is_some_and(header_footer_requests_font_family)
                 || page.content.iter().any(block_requests_font_family)
+                || page
+                    .continued
+                    .iter()
+                    .any(|section| section.content.iter().any(block_requests_font_family))
         }
         Page::Fixed(page) => page.elements.iter().any(|element| match &element.kind {
             FixedElementKind::TextBox(text_box) => {

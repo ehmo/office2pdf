@@ -27,7 +27,51 @@ use wasm_bindgen::prelude::*;
 
 use crate::config::{ConvertOptions, Format};
 use crate::convert_bytes;
-use crate::error::{ConvertResult as CoreConvertResult, ConvertWarning};
+use crate::error::{ConvertError, ConvertResult as CoreConvertResult, ConvertWarning};
+
+/// Largest DOCX the reviewed font path accepts, in bytes.
+///
+/// The plain `convertToPdf` path takes any size, so a 1 MiB ceiling here meant
+/// a document converted unreviewed and refused reviewed. This matches
+/// [`inspect_font`]'s ceiling: one buffer of this size plus the parsed
+/// document stays inside the 4 GiB wasm32 address space with room for the
+/// font set.
+const REVIEWED_DOCX_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Largest reviewed choice payload, in bytes. 128 choices of family names.
+const REVIEWED_CHOICES_MAX_BYTES: usize = 256 * 1024;
+
+/// The reviewed-DOCX failure codes that may cross the wasm boundary verbatim.
+///
+/// Which feature blocked the reviewed path is what the review surface has to
+/// tell the user, so the code has to survive the boundary. Only these fixed
+/// tokens do. Every other error collapses to `font_choices_conversion`,
+/// because a `ConvertError` can also carry an upstream panic message, and that
+/// text is document-derived.
+const REVIEWED_DOCX_CODES: &[&str] = &[
+    "font_choices_duplicate",
+    "font_choices_face",
+    "font_choices_family",
+    "font_choices_input",
+    "font_choices_limit",
+    "font_choices_missing_request",
+    "font_choices_parse_warning",
+    "font_choices_request_set",
+    "font_choices_run_count",
+    "font_choices_uncollected",
+];
+
+/// Map a reviewed-conversion failure onto a boundary-safe code.
+fn reviewed_docx_error(error: &ConvertError) -> JsValue {
+    let code = match error {
+        ConvertError::Parse(code) | ConvertError::Render(code) => code.as_str(),
+        _ => "font_choices_conversion",
+    };
+    match REVIEWED_DOCX_CODES.contains(&code) {
+        true => JsValue::from_str(code),
+        false => JsValue::from_str("font_choices_conversion"),
+    }
+}
 
 /// Inspect supplied font faces without registering or converting them.
 /// The response stays inside the protected document surface. Cmap coverage
@@ -296,7 +340,7 @@ impl Office2PdfConverter {
     #[wasm_bindgen(js_name = inspectDocxFontRequests)]
     pub fn inspect_docx_font_requests(&self, data: &[u8]) -> Result<String, JsValue> {
         use crate::parser::Parser;
-        if data.is_empty() || data.len() > 1024 * 1024 {
+        if data.is_empty() || data.len() > REVIEWED_DOCX_MAX_BYTES {
             return Err(JsValue::from_str("font_requests_input"));
         }
         let (doc, warnings) = crate::parser::docx::DocxParser
@@ -335,7 +379,10 @@ impl Office2PdfConverter {
             italic: bool,
             family: String,
         }
-        if data.is_empty() || data.len() > 1024 * 1024 || choices.len() > 256 * 1024 {
+        if data.is_empty()
+            || data.len() > REVIEWED_DOCX_MAX_BYTES
+            || choices.len() > REVIEWED_CHOICES_MAX_BYTES
+        {
             return Err(JsValue::from_str("font_choices_input"));
         }
         let selected: Vec<Selected> =
@@ -355,7 +402,7 @@ impl Office2PdfConverter {
         let mut result: ConversionResult =
             crate::pipeline::convert_reviewed_docx_bytes(data, &self.options, &applied)
                 .map(Into::into)
-                .map_err(|_| JsValue::from_str("font_choices_conversion"))?;
+                .map_err(|error| reviewed_docx_error(&error))?;
         result.reviewed_font_choices = Some(
             serde_json::to_string(&selected)
                 .map_err(|_| JsValue::from_str("font_choices_result"))?,

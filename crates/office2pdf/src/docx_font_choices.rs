@@ -217,11 +217,16 @@ pub(crate) fn apply(
             return Err("font_choices_uncollected");
         };
         selected.blocks(&mut flow.content, 0)?;
+        for section in &mut flow.continued {
+            selected.blocks(&mut section.content, 0)?;
+        }
         for story in [
             &mut flow.header,
             &mut flow.footer,
             &mut flow.first_header,
             &mut flow.first_footer,
+            &mut flow.even_header,
+            &mut flow.even_footer,
         ]
         .into_iter()
         .flatten()

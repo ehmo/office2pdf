@@ -659,6 +659,19 @@ fn generate_flow_page(
     } else {
         generate_blocks(out, &page.content, ctx)?;
     }
+
+    // A continuous break keeps the next section on this page, so its content
+    // follows the page's own with no `#pagebreak()` between them. The column
+    // layout is the one thing such a section can change, and `#columns` gives
+    // it the local scope Word gives it.
+    for section in &page.continued {
+        out.push('\n');
+        match section.columns {
+            Some(ref cols) => generate_flow_page_columns(out, &section.content, cols, ctx)?,
+            None => generate_blocks(out, &section.content, ctx)?,
+        }
+    }
+
     Ok(())
 }
 
@@ -1512,6 +1525,90 @@ fn section_first_page_expression(section_index: usize) -> String {
     )
 }
 
+/// Typst test for whether the page being drawn carries an even page number.
+///
+/// `w:evenAndOddHeaders` splits a section's stories by the number Word prints,
+/// not by where the page falls in the file, so the test reads the page counter
+/// rather than `here().page()`.
+fn even_page_expression() -> &'static str {
+    "calc.even(counter(page).at(here()).first())"
+}
+
+/// How a picked story is written where the slot takes it.
+#[derive(Debug, Clone, Copy)]
+enum StoryWrap {
+    /// A header or footer, whose story is already a Typst expression.
+    Value,
+    /// A page layer, which takes a content block.
+    Content,
+}
+
+/// The stories one `#set page` slot can draw, already rendered to markup.
+struct StoryChoice<'a> {
+    default: &'a str,
+    /// `w:titlePg`'s story for the section's own first page.
+    first: Option<&'a str>,
+    /// `w:evenAndOddHeaders`' story for even-numbered pages.
+    even: Option<&'a str>,
+}
+
+/// Write one `#set page` slot whose story depends on the page it lands on.
+///
+/// A section can hold three stories for one slot. Typst takes a single value
+/// per slot, so the choice moves into the document behind `context`. Word
+/// resolves the overlap first page first, then parity, and the nesting here
+/// matches that order.
+fn write_story_choice(
+    out: &mut String,
+    slot: &str,
+    section_index: usize,
+    stories: StoryChoice<'_>,
+    wrap: StoryWrap,
+) {
+    let body = |markup: &str| match wrap {
+        StoryWrap::Value => format!("{{ {markup} }}"),
+        StoryWrap::Content => format!("[{markup}]"),
+    };
+    match (stories.first, stories.even) {
+        (None, None) => {
+            let plain: String = match wrap {
+                StoryWrap::Value => stories.default.to_string(),
+                StoryWrap::Content => format!("[{}]", stories.default),
+            };
+            let _ = write!(out, ", {slot}: {plain}");
+        }
+        (Some(first), None) => {
+            let _ = write!(
+                out,
+                ", {slot}: context {{ if here().page() == {} {} else {} }}",
+                section_first_page_expression(section_index),
+                body(first),
+                body(stories.default)
+            );
+        }
+        (None, Some(even)) => {
+            let _ = write!(
+                out,
+                ", {slot}: context {{ if {} {} else {} }}",
+                even_page_expression(),
+                body(even),
+                body(stories.default)
+            );
+        }
+        (Some(first), Some(even)) => {
+            let _ = write!(
+                out,
+                ", {slot}: context {{ if here().page() == {} {} else if {} {} else {} }}",
+                section_first_page_expression(section_index),
+                body(first),
+                even_page_expression(),
+                body(even),
+                body(stories.default)
+            );
+        }
+    }
+}
+
 /// Build the `#set page(header: …)` value for one header story.
 ///
 /// Split out of the page setup so `<w:titlePg/>`'s two stories are built the
@@ -1587,32 +1684,35 @@ fn flow_page_top_margin_pt(page: &FlowPage) -> f64 {
     // page its own story both have to fit it — taking the default story alone
     // would leave a taller first-page header overprinting page one, which is
     // the same defect one page in (#846 added that second story).
-    [page.header.as_ref(), page.first_header.as_ref()]
-        .into_iter()
-        .flatten()
-        .filter(|header| hf_has_flow_content(header))
-        .filter_map(|header| {
-            // The band runs from the `w:header` line down, so a story that
-            // overflows needs the margin to reach the bottom of its content.
-            let reach: f64 =
-                header.distance_from_edge.unwrap_or(0.0) + hf_content_height_pt(header)?;
-            // A story that fits its band is left exactly as it renders today,
-            // clamp and all. Growing those too would move the body a fraction
-            // of a point on ordinary documents — measured at 0.63pt for a
-            // single 12pt Malgun line well inside its band — which is a
-            // different change from stopping an overflow, and one no reference
-            // export here justifies.
-            if reach <= page.margins.top {
-                return None;
-            }
-            // An overflowing story needs room for the ascent correction as
-            // well, or `write_shifted_header_band` clamps the shift straight
-            // back off: the two-line Malgun letterhead measured 41.4984pt of
-            // content against a 41.5pt band, 0.0016pt of room for a 6.84pt
-            // shift (#629 seats that baseline).
-            Some(reach + header_band_shift_pt(header).unwrap_or(0.0).max(0.0))
-        })
-        .fold(page.margins.top, f64::max)
+    [
+        page.header.as_ref(),
+        page.first_header.as_ref(),
+        page.even_header.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|header| hf_has_flow_content(header))
+    .filter_map(|header| {
+        // The band runs from the `w:header` line down, so a story that
+        // overflows needs the margin to reach the bottom of its content.
+        let reach: f64 = header.distance_from_edge.unwrap_or(0.0) + hf_content_height_pt(header)?;
+        // A story that fits its band is left exactly as it renders today,
+        // clamp and all. Growing those too would move the body a fraction
+        // of a point on ordinary documents — measured at 0.63pt for a
+        // single 12pt Malgun line well inside its band — which is a
+        // different change from stopping an overflow, and one no reference
+        // export here justifies.
+        if reach <= page.margins.top {
+            return None;
+        }
+        // An overflowing story needs room for the ascent correction as
+        // well, or `write_shifted_header_band` clamps the shift straight
+        // back off: the two-line Malgun letterhead measured 41.4984pt of
+        // content against a 41.5pt band, 0.0016pt of room for a 6.84pt
+        // shift (#629 seats that baseline).
+        Some(reach + header_band_shift_pt(header).unwrap_or(0.0).max(0.0))
+    })
+    .fold(page.margins.top, f64::max)
 }
 
 /// Height a header or footer story's lines take, in points.
@@ -1651,6 +1751,8 @@ fn write_flow_page_setup(out: &mut String, page: &FlowPage, size: &PageSize, ctx
         && page.footer.is_none()
         && page.first_header.is_none()
         && page.first_footer.is_none()
+        && page.even_header.is_none()
+        && page.even_footer.is_none()
     {
         write_page_setup(out, size, &page.margins);
         return;
@@ -1682,32 +1784,39 @@ fn write_flow_page_setup(out: &mut String, page: &FlowPage, size: &PageSize, ctx
         .first_header
         .as_ref()
         .filter(|header| hf_has_flow_content(header));
-    if first_header.is_some() || default_header.is_some() {
+    let even_header = page
+        .even_header
+        .as_ref()
+        .filter(|header| hf_has_flow_content(header));
+    if first_header.is_some() || default_header.is_some() || even_header.is_some() {
         let default_value = default_header
             .map(|header| flow_header_value(header, page, size, top_margin_pt, ctx))
             .unwrap_or_default();
         let first_value = first_header
             .map(|header| flow_header_value(header, page, size, top_margin_pt, ctx))
             .unwrap_or_default();
-        // The ascent is a page property, so it is set when either story wants
-        // it; a story that does not is unaffected by it.
-        if default_value.wants_zero_ascent || first_value.wants_zero_ascent {
+        let even_value = even_header
+            .map(|header| flow_header_value(header, page, size, top_margin_pt, ctx))
+            .unwrap_or_default();
+        // The ascent is a page property, so it is set when any story wants it;
+        // a story that does not is unaffected by it.
+        if default_value.wants_zero_ascent
+            || first_value.wants_zero_ascent
+            || even_value.wants_zero_ascent
+        {
             out.push_str(", header-ascent: 0pt");
         }
-        match first_header {
-            Some(_) => {
-                let _ = write!(
-                    out,
-                    ", header: context {{ if here().page() == {} {{ {} }} else {{ {} }} }}",
-                    section_first_page_expression(ctx.flow_section_index),
-                    first_value.markup,
-                    default_value.markup
-                );
-            }
-            None => {
-                let _ = write!(out, ", header: {}", default_value.markup);
-            }
-        }
+        write_story_choice(
+            out,
+            "header",
+            ctx.flow_section_index,
+            StoryChoice {
+                default: &default_value.markup,
+                first: first_header.map(|_| first_value.markup.as_str()),
+                even: even_header.map(|_| even_value.markup.as_str()),
+            },
+            StoryWrap::Value,
+        );
     }
 
     // The footer takes the same first-page choice the header does (issue #846).
@@ -1719,30 +1828,37 @@ fn write_flow_page_setup(out: &mut String, page: &FlowPage, size: &PageSize, ctx
         .first_footer
         .as_ref()
         .filter(|footer| hf_has_flow_content(footer));
-    if first_footer.is_some() || default_footer.is_some() {
+    let even_footer = page
+        .even_footer
+        .as_ref()
+        .filter(|footer| hf_has_flow_content(footer));
+    if first_footer.is_some() || default_footer.is_some() || even_footer.is_some() {
         let default_value = default_footer
             .map(|footer| flow_footer_value(footer, page, ctx))
             .unwrap_or_default();
         let first_value = first_footer
             .map(|footer| flow_footer_value(footer, page, ctx))
             .unwrap_or_default();
-        if default_value.wants_zero_descent || first_value.wants_zero_descent {
+        let even_value = even_footer
+            .map(|footer| flow_footer_value(footer, page, ctx))
+            .unwrap_or_default();
+        if default_value.wants_zero_descent
+            || first_value.wants_zero_descent
+            || even_value.wants_zero_descent
+        {
             out.push_str(", footer-descent: 0pt");
         }
-        match first_footer {
-            Some(_) => {
-                let _ = write!(
-                    out,
-                    ", footer: context {{ if here().page() == {} {{ {} }} else {{ {} }} }}",
-                    section_first_page_expression(ctx.flow_section_index),
-                    first_value.markup,
-                    default_value.markup
-                );
-            }
-            None => {
-                let _ = write!(out, ", footer: {}", default_value.markup);
-            }
-        }
+        write_story_choice(
+            out,
+            "footer",
+            ctx.flow_section_index,
+            StoryChoice {
+                default: &default_value.markup,
+                first: first_footer.map(|_| first_value.markup.as_str()),
+                even: even_footer.map(|_| even_value.markup.as_str()),
+            },
+            StoryWrap::Value,
+        );
     }
 
     // `<wp:anchor behindDoc="1">` puts the shape under the page's own content,
@@ -1772,23 +1888,35 @@ fn write_flow_page_setup(out: &mut String, page: &FlowPage, size: &PageSize, ctx
             ),
             false => String::new(),
         };
-        if default_markup.is_empty() && first_markup.is_empty() {
+        // An even page draws the even story where the section states one and
+        // the default story where it does not, so its layer is built from
+        // whichever it actually draws.
+        let even_stated: bool = page.even_header.is_some() || page.even_footer.is_some();
+        let even_markup: String = match even_stated {
+            true => page_anchored_layer_markup(
+                page.even_header.as_ref().or(page.header.as_ref()),
+                page.even_footer.as_ref().or(page.footer.as_ref()),
+                page,
+                size,
+                behind_text,
+                ctx,
+            ),
+            false => String::new(),
+        };
+        if default_markup.is_empty() && first_markup.is_empty() && even_markup.is_empty() {
             continue;
         }
-        match first_stated {
-            true => {
-                let _ = write!(
-                    out,
-                    ", {layer}: context {{ if here().page() == {} [{}] else [{}] }}",
-                    section_first_page_expression(ctx.flow_section_index),
-                    first_markup,
-                    default_markup
-                );
-            }
-            false => {
-                let _ = write!(out, ", {layer}: [{default_markup}]");
-            }
-        }
+        write_story_choice(
+            out,
+            layer,
+            ctx.flow_section_index,
+            StoryChoice {
+                default: &default_markup,
+                first: first_stated.then_some(first_markup.as_str()),
+                even: even_stated.then_some(even_markup.as_str()),
+            },
+            StoryWrap::Content,
+        );
     }
 
     out.push_str(")\n");

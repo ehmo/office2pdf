@@ -18,6 +18,9 @@ fn make_doc(pages: Vec<Page>) -> Document {
 /// Helper to create a FlowPage with default A4 size and margins.
 fn make_flow_page(content: Vec<Block>) -> Page {
     Page::Flow(FlowPage {
+        even_header: None,
+        even_footer: None,
+        continued: Vec::new(),
         first_header: None,
         first_footer: None,
         size: PageSize::default(),

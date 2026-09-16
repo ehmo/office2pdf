@@ -9,9 +9,9 @@ use crate::error::{ConvertError, ConvertWarning};
 const MAX_TABLE_DEPTH: usize = 64;
 use crate::ir::{
     Alignment, Block, BorderLineStyle, BorderSide, Caption, CellBorder, CellVerticalAlign, Color,
-    ColumnLayout, Document, FloatingImage, FloatingTextBox, ImageData, ImageFormat,
-    ImageParagraphSpacing, Insets, LineSpacing, Page, PageNumbering, PairKerning, Paragraph,
-    ParagraphStyle, Run, StyleSheet, TabAlignment, TabLeader, TabStop, Table, TableCell,
+    ColumnLayout, ContinuedSection, Document, FloatingImage, FloatingTextBox, FlowPage, ImageData,
+    ImageFormat, ImageParagraphSpacing, Insets, LineSpacing, Page, PageNumbering, PairKerning,
+    Paragraph, ParagraphStyle, Run, StyleSheet, TabAlignment, TabLeader, TabStop, Table, TableCell,
     TableOfContents, TableRow, TextDirection, TextStyle, VerticalTextAlign,
 };
 use crate::parser::Parser;
@@ -39,7 +39,8 @@ use self::media::{
 #[cfg(test)]
 use self::sections::extract_page_size;
 use self::sections::{
-    HeaderFooterAssets, SectionOverrides, build_flow_page_from_section, build_header_footer_assets,
+    EvenPageStories, HeaderFooterAssets, SectionOverrides, build_flow_page_from_section,
+    build_header_footer_assets,
 };
 use self::styles::{
     DOC_DEFAULT_STYLE_ID, PairKerningRules, ResolvedStyle, StyleMap, TabStopOverride,
@@ -327,6 +328,7 @@ impl Parser for DocxParser {
         _options: &ConvertOptions,
     ) -> Result<(Document, Vec<ConvertWarning>), ConvertError> {
         let default_tab_stop_pt: Option<f64> = extract_default_tab_stop_pt(data);
+        let even_pages: EvenPageStories = extract_even_page_stories(data);
         let ZipPreParseAssets {
             metadata,
             mut ctx,
@@ -432,18 +434,26 @@ impl Parser for DocxParser {
                     Some(layout) => layout.clone(),
                     None => extract_column_layout_from_section_property(section_prop),
                 };
-                pages.push(Page::Flow(build_flow_page_from_section(
+                push_section_page(
+                    &mut pages,
+                    build_flow_page_from_section(
+                        section_prop,
+                        std::mem::take(&mut elements),
+                        &numberings,
+                        &header_footer_assets,
+                        SectionOverrides {
+                            column_layout,
+                            page_numbering: page_numbering
+                                .get(section_layout_index)
+                                .copied()
+                                .flatten(),
+                            even_pages,
+                        },
+                        style_map.get(DOC_DEFAULT_STYLE_ID),
+                        &mut warnings,
+                    ),
                     section_prop,
-                    std::mem::take(&mut elements),
-                    &numberings,
-                    &header_footer_assets,
-                    SectionOverrides {
-                        column_layout,
-                        page_numbering: page_numbering.get(section_layout_index).copied().flatten(),
-                    },
-                    style_map.get(DOC_DEFAULT_STYLE_ID),
-                    &mut warnings,
-                )));
+                );
                 section_layout_index += 1;
             }
         }
@@ -452,18 +462,23 @@ impl Parser for DocxParser {
             Some(layout) => layout.clone(),
             None => extract_column_layout_from_section_property(&docx.document.section_property),
         };
-        pages.push(Page::Flow(build_flow_page_from_section(
+        push_section_page(
+            &mut pages,
+            build_flow_page_from_section(
+                &docx.document.section_property,
+                elements,
+                &numberings,
+                &header_footer_assets,
+                SectionOverrides {
+                    column_layout: final_column_layout,
+                    page_numbering: page_numbering.get(section_layout_index).copied().flatten(),
+                    even_pages,
+                },
+                style_map.get(DOC_DEFAULT_STYLE_ID),
+                &mut warnings,
+            ),
             &docx.document.section_property,
-            elements,
-            &numberings,
-            &header_footer_assets,
-            SectionOverrides {
-                column_layout: final_column_layout,
-                page_numbering: page_numbering.get(section_layout_index).copied().flatten(),
-            },
-            style_map.get(DOC_DEFAULT_STYLE_ID),
-            &mut warnings,
-        )));
+        );
 
         Ok((
             Document {
@@ -484,6 +499,129 @@ impl Parser for DocxParser {
     }
 }
 
+const WORDPROCESSINGML_NAMESPACE: &[u8] =
+    b"http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+/// Add a section's page, or fold it onto the page a continuous break keeps it
+/// on.
+///
+/// `w:sectPr/w:type` says how the section it belongs to *starts*, so
+/// `continuous` means the section shares a page with the one before it. Two
+/// cases are not a break at all and must not fold: the document's first
+/// section has nothing to continue from, and a section that changes the sheet
+/// or its margins takes a new page in Word too, because one page carries one
+/// page setup.
+fn push_section_page(
+    pages: &mut Vec<Page>,
+    page: FlowPage,
+    section_prop: &docx_rs::SectionProperty,
+) {
+    let continues = matches!(
+        section_prop.section_type,
+        Some(docx_rs::SectionType::Continuous | docx_rs::SectionType::NextColumn)
+    );
+    let previous = match continues {
+        true => pages.last_mut(),
+        false => None,
+    };
+    let Some(Page::Flow(previous)) = previous else {
+        pages.push(Page::Flow(page));
+        return;
+    };
+    if previous.size != page.size || previous.margins != page.margins {
+        pages.push(Page::Flow(page));
+        return;
+    }
+    let FlowPage {
+        content,
+        columns,
+        header,
+        footer,
+        first_header,
+        first_footer,
+        even_header,
+        even_footer,
+        continued,
+        ..
+    } = page;
+    previous
+        .continued
+        .push(ContinuedSection { columns, content });
+    previous.continued.extend(continued);
+    // The last section on a page owns the stories drawn around it. A section
+    // that states none keeps whatever the page already draws, which is what
+    // Word does when a continuous section inherits its headers.
+    for (slot, story) in [
+        (&mut previous.header, header),
+        (&mut previous.footer, footer),
+        (&mut previous.first_header, first_header),
+        (&mut previous.first_footer, first_footer),
+        (&mut previous.even_header, even_header),
+        (&mut previous.even_footer, even_footer),
+    ] {
+        if story.is_some() {
+            *slot = story;
+        }
+    }
+}
+
+/// Whether `word/settings.xml` carries `<w:evenAndOddHeaders/>`.
+///
+/// Word writes a section's `even` header and footer references into the file
+/// and keeps them after the setting is switched back off, so the references
+/// alone do not mean even pages are drawn differently. Read from the raw part
+/// for the same reason [`extract_default_tab_stop_pt`] is: the docx-rs type
+/// keeps the field private.
+fn extract_even_page_stories(data: &[u8]) -> EvenPageStories {
+    let Some(mut archive) = crate::parser::open_zip(data).ok() else {
+        return EvenPageStories::Ignored;
+    };
+    let Some(settings_xml) = read_zip_text(&mut archive, "word/settings.xml") else {
+        return EvenPageStories::Ignored;
+    };
+    let mut reader = quick_xml::NsReader::from_reader(settings_xml.as_bytes());
+    let mut buffer: Vec<u8> = Vec::new();
+
+    loop {
+        buffer.clear();
+        let Ok((namespace, event)) = reader.read_resolved_event_into(&mut buffer) else {
+            return EvenPageStories::Ignored;
+        };
+        match event {
+            quick_xml::events::Event::Start(element) | quick_xml::events::Event::Empty(element)
+                if matches!(
+                    namespace,
+                    quick_xml::name::ResolveResult::Bound(ref namespace)
+                        if namespace.as_ref() == WORDPROCESSINGML_NAMESPACE
+                ) && element.local_name().as_ref() == b"evenAndOddHeaders" =>
+            {
+                // An ECMA-376 on/off element is on unless `w:val` turns it off.
+                for attribute in element.attributes().flatten() {
+                    let (namespace, local_name) = reader.resolve_attribute(attribute.key);
+                    if !matches!(
+                        namespace,
+                        quick_xml::name::ResolveResult::Bound(ref namespace)
+                            if namespace.as_ref() == WORDPROCESSINGML_NAMESPACE
+                    ) || local_name.as_ref() != b"val"
+                    {
+                        continue;
+                    }
+                    let value = attribute
+                        .decode_and_unescape_value(reader.decoder())
+                        .unwrap_or_default();
+                    return match value.as_ref() {
+                        "0" | "false" | "off" => EvenPageStories::Ignored,
+                        _ => EvenPageStories::Honoured,
+                    };
+                }
+                return EvenPageStories::Honoured;
+            }
+            quick_xml::events::Event::Eof => return EvenPageStories::Ignored,
+            _ => {}
+        }
+    }
+}
+
 /// `w:defaultTabStop w:val` from `word/settings.xml`, in points. Read from
 /// the raw part because docx-rs substitutes its own default when the
 /// element is absent, erasing the absent-vs-explicit distinction the
@@ -493,8 +631,6 @@ fn extract_default_tab_stop_pt(data: &[u8]) -> Option<f64> {
     let settings_xml: String = read_zip_text(&mut archive, "word/settings.xml")?;
     let mut reader = quick_xml::NsReader::from_reader(settings_xml.as_bytes());
     let mut buffer: Vec<u8> = Vec::new();
-    const WORDPROCESSINGML_NAMESPACE: &[u8] =
-        b"http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
     loop {
         buffer.clear();

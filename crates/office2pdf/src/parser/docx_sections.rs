@@ -337,6 +337,21 @@ fn resolve_part_target(directory: &str, target: &str) -> String {
 pub(super) struct SectionOverrides {
     pub(super) column_layout: Option<ColumnLayout>,
     pub(super) page_numbering: Option<PageNumbering>,
+    /// Document-level, not section-level: `word/settings.xml` states it once
+    /// for the whole file, and every section reads the same answer.
+    pub(super) even_pages: EvenPageStories,
+}
+
+/// Whether `word/settings.xml` carries `<w:evenAndOddHeaders/>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum EvenPageStories {
+    /// Even-numbered pages draw the section's `even` header and footer.
+    Honoured,
+    /// Word ignores the `even` stories. A section may still declare them —
+    /// Word keeps them in the file after the setting is switched back off —
+    /// and every page draws the default story instead.
+    #[default]
+    Ignored,
 }
 
 fn suppress_contextual_spacing(above: &mut Paragraph, below: &mut Paragraph) {
@@ -445,38 +460,12 @@ pub(super) fn build_flow_page_from_section(
         }
     }
 
-    if matches!(
-        section_prop.section_type,
-        Some(docx_rs::SectionType::Continuous | docx_rs::SectionType::NextColumn)
-    ) {
-        warnings.push(ConvertWarning::FallbackUsed {
-            format: "DOCX".to_string(),
-            from: "continuous section break".to_string(),
-            to: "page-level section split".to_string(),
-        });
-    }
-
-    // A `first` variant is honoured now, so only the `even` ones still collapse
-    // onto the default. A first variant without `w:titlePg` is not a variant at
-    // all — Word ignores it — so it does not warn either (issue #846).
-    if section_prop.even_header_reference.is_some()
-        || section_prop.even_footer_reference.is_some()
-        || section_prop.even_header.is_some()
-        || section_prop.even_footer.is_some()
-    {
-        warnings.push(ConvertWarning::FallbackUsed {
-            format: "DOCX".to_string(),
-            from: "even-page header/footer".to_string(),
-            to: "the section's default header/footer".to_string(),
-        });
-    }
-
-    let mut header = extract_docx_header(section_prop, header_footer_assets);
+    let mut header = extract_docx_header(section_prop, header_footer_assets, overrides.even_pages);
     if let Some(header) = &mut header {
         header.distance_from_edge = Some(twips_to_pt(section_prop.page_margin.header));
         apply_doc_default_text_style(header, doc_default_style);
     }
-    let mut footer = extract_docx_footer(section_prop, header_footer_assets);
+    let mut footer = extract_docx_footer(section_prop, header_footer_assets, overrides.even_pages);
     if let Some(footer) = &mut footer {
         footer.distance_from_edge = Some(twips_to_pt(section_prop.page_margin.footer));
         apply_doc_default_text_style(footer, doc_default_style);
@@ -493,6 +482,19 @@ pub(super) fn build_flow_page_from_section(
         first_footer.distance_from_edge = Some(twips_to_pt(section_prop.page_margin.footer));
         apply_doc_default_text_style(first_footer, doc_default_style);
     }
+    // The even-page stories take the same edge distance and default style.
+    let mut even_header =
+        extract_docx_even_header(section_prop, header_footer_assets, overrides.even_pages);
+    if let Some(even_header) = &mut even_header {
+        even_header.distance_from_edge = Some(twips_to_pt(section_prop.page_margin.header));
+        apply_doc_default_text_style(even_header, doc_default_style);
+    }
+    let mut even_footer =
+        extract_docx_even_footer(section_prop, header_footer_assets, overrides.even_pages);
+    if let Some(even_footer) = &mut even_footer {
+        even_footer.distance_from_edge = Some(twips_to_pt(section_prop.page_margin.footer));
+        apply_doc_default_text_style(even_footer, doc_default_style);
+    }
 
     FlowPage {
         size,
@@ -502,6 +504,9 @@ pub(super) fn build_flow_page_from_section(
         footer,
         first_header,
         first_footer,
+        even_header,
+        even_footer,
+        continued: Vec::new(),
         page_numbering: overrides.page_numbering,
         columns: overrides
             .column_layout
@@ -670,11 +675,68 @@ pub(super) fn extract_docx_first_footer(
         })
 }
 
-/// Extract the header for a section, preferring the default variant and falling back to
-/// first/even variants when that is all the source document provides.
-fn extract_docx_header(
+/// The `even` variant of a section's header, where `<w:evenAndOddHeaders/>`
+/// asks for one.
+///
+/// Like [`extract_docx_first_header`] this does not fall back to the other
+/// variants: the even story names even-numbered pages specifically, and
+/// standing the default in for it would draw them the same as the odd ones,
+/// which is the bug.
+pub(super) fn extract_docx_even_header(
     section_prop: &docx_rs::SectionProperty,
     assets: &HeaderFooterAssets,
+    even_pages: EvenPageStories,
+) -> Option<HeaderFooter> {
+    if even_pages == EvenPageStories::Ignored {
+        return None;
+    }
+    section_prop
+        .even_header_reference
+        .as_ref()
+        .and_then(|reference| assets.headers.get(&reference.id).cloned())
+        .or_else(|| {
+            section_prop
+                .even_header
+                .as_ref()
+                .and_then(|(_relationship_id, header)| {
+                    convert_docx_header(header, &ImageMap::new(), &[], &[])
+                })
+        })
+}
+
+/// The `even` variant of a section's footer, under the same rule.
+pub(super) fn extract_docx_even_footer(
+    section_prop: &docx_rs::SectionProperty,
+    assets: &HeaderFooterAssets,
+    even_pages: EvenPageStories,
+) -> Option<HeaderFooter> {
+    if even_pages == EvenPageStories::Ignored {
+        return None;
+    }
+    section_prop
+        .even_footer_reference
+        .as_ref()
+        .and_then(|reference| assets.footers.get(&reference.id).cloned())
+        .or_else(|| {
+            section_prop
+                .even_footer
+                .as_ref()
+                .and_then(|(_relationship_id, footer)| {
+                    convert_docx_footer(footer, &ImageMap::new(), &[], &[], &[])
+                })
+        })
+}
+
+/// Extract the header for a section, preferring the default variant and falling back to
+/// first/even variants when that is all the source document provides.
+///
+/// The even fallback applies only where Word ignores the even story anyway.
+/// Once `<w:evenAndOddHeaders/>` is on, that story belongs to the even pages,
+/// and lending it to the default would draw it on the odd ones too.
+pub(super) fn extract_docx_header(
+    section_prop: &docx_rs::SectionProperty,
+    assets: &HeaderFooterAssets,
+    even_pages: EvenPageStories,
 ) -> Option<HeaderFooter> {
     section_prop
         .header_reference
@@ -703,26 +765,30 @@ fn extract_docx_header(
                 })
         })
         .or_else(|| {
-            section_prop
-                .even_header_reference
-                .as_ref()
-                .and_then(|reference| assets.headers.get(&reference.id).cloned())
-        })
-        .or_else(|| {
-            section_prop
-                .even_header
-                .as_ref()
-                .and_then(|(_relationship_id, header)| {
-                    convert_docx_header(header, &ImageMap::new(), &[], &[])
+            (even_pages == EvenPageStories::Ignored)
+                .then(|| {
+                    section_prop
+                        .even_header_reference
+                        .as_ref()
+                        .and_then(|reference| assets.headers.get(&reference.id).cloned())
+                        .or_else(|| {
+                            section_prop.even_header.as_ref().and_then(
+                                |(_relationship_id, header)| {
+                                    convert_docx_header(header, &ImageMap::new(), &[], &[])
+                                },
+                            )
+                        })
                 })
+                .flatten()
         })
 }
 
-/// Extract the footer for a section, preferring the default variant and falling back to
-/// first/even variants when that is all the source document provides.
+/// Extract the footer for a section, under the same rule as
+/// [`extract_docx_header`].
 fn extract_docx_footer(
     section_prop: &docx_rs::SectionProperty,
     assets: &HeaderFooterAssets,
+    even_pages: EvenPageStories,
 ) -> Option<HeaderFooter> {
     section_prop
         .footer_reference
@@ -751,18 +817,21 @@ fn extract_docx_footer(
                 })
         })
         .or_else(|| {
-            section_prop
-                .even_footer_reference
-                .as_ref()
-                .and_then(|reference| assets.footers.get(&reference.id).cloned())
-        })
-        .or_else(|| {
-            section_prop
-                .even_footer
-                .as_ref()
-                .and_then(|(_relationship_id, footer)| {
-                    convert_docx_footer(footer, &ImageMap::new(), &[], &[], &[])
+            (even_pages == EvenPageStories::Ignored)
+                .then(|| {
+                    section_prop
+                        .even_footer_reference
+                        .as_ref()
+                        .and_then(|reference| assets.footers.get(&reference.id).cloned())
+                        .or_else(|| {
+                            section_prop.even_footer.as_ref().and_then(
+                                |(_relationship_id, footer)| {
+                                    convert_docx_footer(footer, &ImageMap::new(), &[], &[], &[])
+                                },
+                            )
+                        })
                 })
+                .flatten()
         })
 }
 

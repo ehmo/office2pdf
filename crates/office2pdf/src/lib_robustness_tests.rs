@@ -331,6 +331,9 @@ fn test_edge_image_only_docx() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),

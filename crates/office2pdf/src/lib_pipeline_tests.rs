@@ -110,6 +110,9 @@ fn test_should_resolve_font_context_true_when_document_requests_font_family() {
     let doc = Document {
         metadata: Metadata::default(),
         pages: vec![Page::Flow(FlowPage {
+            even_header: None,
+            even_footer: None,
+            continued: Vec::new(),
             first_header: None,
             first_footer: None,
             size: PageSize::default(),
