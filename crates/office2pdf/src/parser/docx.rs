@@ -133,9 +133,9 @@ fn build_image_map(docx: &docx_rs::Docx) -> ImageMap {
 
 fn build_document_metafile_image_map<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
-) -> ImageMap {
+) -> (ImageMap, Vec<ConvertWarning>) {
     let Some(relationships_xml) = read_zip_text(archive, "word/_rels/document.xml.rels") else {
-        return ImageMap::new();
+        return (ImageMap::new(), Vec::new());
     };
     let mut reader = quick_xml::Reader::from_str(&relationships_xml);
     let mut relationships: Vec<(String, String)> = Vec::new();
@@ -172,26 +172,45 @@ fn build_document_metafile_image_map<R: Read + std::io::Seek>(
         }
     }
 
-    relationships
-        .into_iter()
-        .filter_map(|(id, target)| {
-            let path = format!("word/{}", target.trim_start_matches('/'));
-            let mut data: Vec<u8> = Vec::new();
-            archive.by_name(&path).ok()?.read_to_end(&mut data).ok()?;
-            let svg: Vec<u8> = if target.to_ascii_lowercase().ends_with(".wmf") {
-                crate::parser::wmf::convert_wmf_to_svg(&data)?
-            } else {
-                crate::parser::emf::convert_emf_to_svg(&data)?
-            };
-            Some((
-                id,
-                DocxImageAsset {
-                    data: svg,
-                    format: ImageFormat::Svg,
-                },
-            ))
-        })
-        .collect()
+    // A metafile the document declares but the converter cannot read or turn into
+    // SVG leaves a hole where a picture belongs. Report each one so the caller can
+    // refuse the document instead of shipping a page with the picture missing.
+    let mut images = ImageMap::new();
+    let mut warnings: Vec<ConvertWarning> = Vec::new();
+    for (id, target) in relationships {
+        let is_wmf: bool = target.to_ascii_lowercase().ends_with(".wmf");
+        let path = format!("word/{}", target.trim_start_matches('/'));
+        let mut data: Vec<u8> = Vec::new();
+        let read: bool = archive
+            .by_name(&path)
+            .ok()
+            .and_then(|mut entry| entry.read_to_end(&mut data).ok())
+            .is_some();
+        let svg: Option<Vec<u8>> = if !read {
+            None
+        } else if is_wmf {
+            crate::parser::wmf::convert_wmf_to_svg(&data)
+        } else {
+            crate::parser::emf::convert_emf_to_svg(&data)
+        };
+        match svg {
+            Some(svg) => {
+                images.insert(
+                    id,
+                    DocxImageAsset {
+                        data: svg,
+                        format: ImageFormat::Svg,
+                    },
+                );
+            }
+            None => warnings.push(ConvertWarning::UnsupportedElement {
+                format: "DOCX".to_string(),
+                element: format!("{} metafile image", if is_wmf { "WMF" } else { "EMF" }),
+            }),
+        }
+    }
+
+    (images, warnings)
 }
 
 /// Pre-parsed assets extracted from the DOCX ZIP archive before docx-rs parsing.
@@ -204,6 +223,7 @@ struct ZipPreParseAssets {
     page_numbering: Vec<Option<PageNumbering>>,
     header_footer_assets: HeaderFooterAssets,
     metafile_images: ImageMap,
+    metafile_warnings: Vec<ConvertWarning>,
     theme_fonts: ThemeFonts,
     default_paragraph_style_id: Option<String>,
     style_paragraph_backgrounds: HashMap<String, Color>,
@@ -250,7 +270,8 @@ fn build_zip_preparse_assets(data: &[u8]) -> ZipPreParseAssets {
             let bidi = BidiContext::from_xml(doc_xml.as_deref());
             let small_caps = SmallCapsContext::from_xml(doc_xml.as_deref());
             let header_footer_assets = build_header_footer_assets(&mut archive);
-            let metafile_images = build_document_metafile_image_map(&mut archive);
+            let (metafile_images, metafile_warnings) =
+                build_document_metafile_image_map(&mut archive);
             let ctx = DocxConversionContext {
                 notes,
                 wraps,
@@ -279,6 +300,7 @@ fn build_zip_preparse_assets(data: &[u8]) -> ZipPreParseAssets {
                 page_numbering,
                 header_footer_assets,
                 metafile_images,
+                metafile_warnings,
                 theme_fonts: theme_xml
                     .as_deref()
                     .map(parse_theme_fonts)
@@ -312,6 +334,7 @@ fn build_zip_preparse_assets(data: &[u8]) -> ZipPreParseAssets {
             page_numbering: Vec::new(),
             header_footer_assets: HeaderFooterAssets::default(),
             metafile_images: ImageMap::new(),
+            metafile_warnings: Vec::new(),
             theme_fonts: ThemeFonts::default(),
             default_paragraph_style_id: None,
             style_paragraph_backgrounds: HashMap::new(),
@@ -338,6 +361,7 @@ impl Parser for DocxParser {
             page_numbering,
             header_footer_assets,
             metafile_images,
+            metafile_warnings,
             theme_fonts,
             default_paragraph_style_id,
             style_paragraph_backgrounds,
@@ -364,7 +388,7 @@ impl Parser for DocxParser {
             &style_word_wraps,
             &pair_kerning,
         );
-        let mut warnings: Vec<ConvertWarning> = Vec::new();
+        let mut warnings: Vec<ConvertWarning> = metafile_warnings;
 
         let mut elements: Vec<TaggedElement> = Vec::new();
         let mut pages: Vec<Page> = Vec::new();

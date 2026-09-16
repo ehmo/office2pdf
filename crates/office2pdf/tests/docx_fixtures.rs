@@ -1116,6 +1116,22 @@ fn structure_various_pictures_preserves_raster_emf_and_wmf_images() {
     );
 }
 
+/// Control for the metafile warning: these EMF and WMF pictures do convert, so
+/// the parser must stay silent. A warning here would refuse a document that
+/// renders correctly.
+#[test]
+fn structure_various_pictures_reports_no_metafile_warning() {
+    let data = load_fixture("VariousPictures.docx");
+    let (_doc, warnings) = DocxParser.parse(&data, &ConvertOptions::default()).unwrap();
+
+    let metafile: Vec<&office2pdf::error::ConvertWarning> = warnings
+        .iter()
+        .filter(|warning| warning.to_string().contains("metafile image"))
+        .collect();
+
+    assert!(metafile.is_empty(), "unexpected metafile warnings: {metafile:?}");
+}
+
 #[test]
 fn structure_various_pictures_keeps_inline_images_in_one_flow_container() {
     let pages = flow_pages("VariousPictures.docx");

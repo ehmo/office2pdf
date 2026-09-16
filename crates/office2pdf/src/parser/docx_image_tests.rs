@@ -459,3 +459,79 @@ fn test_inline_image_inherits_paragraph_center_alignment() {
         .expect("expected an inline image block");
     assert_eq!(image.alignment, Some(Alignment::Center));
 }
+
+/// Build a package holding only the document relationships and the media parts
+/// the test wants present, which is all `build_document_metafile_image_map`
+/// reads.
+fn build_metafile_package(relationships: &str, media: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::FileOptions::default();
+    zip.start_file("word/_rels/document.xml.rels", options)
+        .unwrap();
+    std::io::Write::write_all(
+        &mut zip,
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{relationships}</Relationships>"#
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    for (name, data) in media {
+        zip.start_file(*name, options).unwrap();
+        std::io::Write::write_all(&mut zip, data).unwrap();
+    }
+    zip.finish().unwrap().into_inner()
+}
+
+const IMAGE_REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+
+#[test]
+fn unreadable_metafile_warns_instead_of_dropping_the_picture() {
+    let package = build_metafile_package(
+        &format!(
+            r#"<Relationship Id="rId1" Type="{IMAGE_REL}" Target="media/broken.emf"/>
+               <Relationship Id="rId2" Type="{IMAGE_REL}" Target="media/broken.wmf"/>
+               <Relationship Id="rId3" Type="{IMAGE_REL}" Target="media/absent.emf"/>"#
+        ),
+        &[
+            ("word/media/broken.emf", b"not a metafile"),
+            ("word/media/broken.wmf", b"not a metafile"),
+        ],
+    );
+    let mut archive = crate::parser::open_zip(&package).unwrap();
+    let (images, warnings) = build_document_metafile_image_map(&mut archive);
+
+    assert!(images.is_empty(), "no picture could be produced");
+    assert_eq!(
+        warnings,
+        vec![
+            ConvertWarning::UnsupportedElement {
+                format: "DOCX".to_string(),
+                element: "EMF metafile image".to_string(),
+            },
+            ConvertWarning::UnsupportedElement {
+                format: "DOCX".to_string(),
+                element: "WMF metafile image".to_string(),
+            },
+            ConvertWarning::UnsupportedElement {
+                format: "DOCX".to_string(),
+                element: "EMF metafile image".to_string(),
+            },
+        ],
+        "a declared metafile that cannot be read or converted must be reported"
+    );
+}
+
+#[test]
+fn a_package_without_metafiles_reports_nothing() {
+    let package = build_metafile_package(
+        &format!(r#"<Relationship Id="rId1" Type="{IMAGE_REL}" Target="media/photo.png"/>"#),
+        &[("word/media/photo.png", b"not a png either")],
+    );
+    let mut archive = crate::parser::open_zip(&package).unwrap();
+    let (images, warnings) = build_document_metafile_image_map(&mut archive);
+
+    assert!(images.is_empty());
+    assert!(warnings.is_empty(), "only metafiles go through this path");
+}
