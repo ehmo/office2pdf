@@ -44,10 +44,10 @@ const REVIEWED_CHOICES_MAX_BYTES: usize = 256 * 1024;
 /// The reviewed-DOCX failure codes that may cross the wasm boundary verbatim.
 ///
 /// Which feature blocked the reviewed path is what the review surface has to
-/// tell the user, so the code has to survive the boundary. Only these fixed
-/// tokens do. Every other error collapses to `font_choices_conversion`,
-/// because a `ConvertError` can also carry an upstream panic message, and that
-/// text is document-derived.
+/// tell the user, so the code has to survive the boundary. These are the fixed
+/// tokens the reviewed path raises itself. Any other payload is reported by
+/// its error class instead, because a `ConvertError` can also carry an
+/// upstream parser or Typst message, and that text is document-derived.
 const REVIEWED_DOCX_CODES: &[&str] = &[
     "font_choices_duplicate",
     "font_choices_face",
@@ -62,15 +62,28 @@ const REVIEWED_DOCX_CODES: &[&str] = &[
 ];
 
 /// Map a reviewed-conversion failure onto a boundary-safe code.
-fn reviewed_docx_error(error: &ConvertError) -> JsValue {
-    let code = match error {
-        ConvertError::Parse(code) | ConvertError::Render(code) => code.as_str(),
-        _ => "font_choices_conversion",
-    };
-    match REVIEWED_DOCX_CODES.contains(&code) {
-        true => JsValue::from_str(code),
-        false => JsValue::from_str("font_choices_conversion"),
+///
+/// Collapsing every unlisted failure onto one token told the review surface
+/// only that something went wrong. The class is document-independent, so it
+/// crosses; the message never does.
+fn reviewed_docx_code(error: &ConvertError) -> &str {
+    if let ConvertError::Parse(code) | ConvertError::Render(code) = error {
+        if REVIEWED_DOCX_CODES.contains(&code.as_str()) {
+            return code;
+        }
     }
+
+    match error {
+        ConvertError::Parse(_) => "font_choices_parse",
+        ConvertError::Render(_) => "font_choices_render",
+        ConvertError::UnsupportedEncryption => "font_choices_encrypted",
+        ConvertError::UnsupportedFormat(_) => "font_choices_format",
+        ConvertError::Io(_) => "font_choices_io",
+    }
+}
+
+fn reviewed_docx_error(error: &ConvertError) -> JsValue {
+    JsValue::from_str(reviewed_docx_code(error))
 }
 
 /// Inspect supplied font faces without registering or converting them.

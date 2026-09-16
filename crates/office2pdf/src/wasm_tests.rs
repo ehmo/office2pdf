@@ -198,3 +198,62 @@ fn test_wasm_warning_preserves_fallback_fields() {
     assert_eq!(warning.to.as_deref(), Some("Noto Sans SC"));
     assert!(warning.message.contains("SimSun rendered as Noto Sans SC"));
 }
+
+#[test]
+fn reviewed_code_keeps_allowlisted_tokens() {
+    for code in REVIEWED_DOCX_CODES {
+        let parse = ConvertError::Parse((*code).to_string());
+        let render = ConvertError::Render((*code).to_string());
+
+        assert_eq!(reviewed_docx_code(&parse), *code);
+        assert_eq!(reviewed_docx_code(&render), *code);
+    }
+}
+
+#[test]
+fn reviewed_code_reports_the_error_class() {
+    let cases = [
+        (
+            ConvertError::Parse("docx parse error: bad table".into()),
+            "font_choices_parse",
+        ),
+        (
+            ConvertError::Render("Typst compilation failed: unknown variable: Signature".into()),
+            "font_choices_render",
+        ),
+        (ConvertError::UnsupportedEncryption, "font_choices_encrypted"),
+        (
+            ConvertError::UnsupportedFormat("doc".into()),
+            "font_choices_format",
+        ),
+        (
+            ConvertError::Io(std::io::Error::other("Confidential Q3.docx")),
+            "font_choices_io",
+        ),
+    ];
+
+    for (error, expected) in &cases {
+        assert_eq!(reviewed_docx_code(error), *expected);
+    }
+}
+
+/// The reviewed path crosses into JavaScript, so a code that carried any part
+/// of the document's own text would leak it.
+#[test]
+fn reviewed_code_never_carries_the_message() {
+    let secret = "Signature of Jane Roe, account 4011";
+    let errors = [
+        ConvertError::Parse(secret.to_string()),
+        ConvertError::Render(format!("Typst compilation failed: {secret}")),
+        ConvertError::UnsupportedFormat(secret.to_string()),
+        ConvertError::Io(std::io::Error::other(secret)),
+    ];
+
+    for error in &errors {
+        let code = reviewed_docx_code(error);
+
+        assert!(!code.contains("Signature"), "leaked: {code}");
+        assert!(!code.contains("Jane"), "leaked: {code}");
+        assert!(code.starts_with("font_choices_"), "unexpected: {code}");
+    }
+}
